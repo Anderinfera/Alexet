@@ -1,0 +1,10 @@
+torch
+transformers
+sentencepiece
+protobuf
+huggingface_hub
+numpy
+pillow
+litert-torch==0.9.4
+ai-edge-litert==2.2.0
+ai-edge-quantizer

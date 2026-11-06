@@ -1,0 +1,28 @@
+.gradle/
+build/
+local.properties
+*.log
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+output.json
+*.iml
+.idea/
+*.hprof
+.kotlin
+app/release/
+*dump*.xml
+
+# Smart search model tooling: only the scripts are tracked
+tools/smart-search/out/
+tools/smart-search/.venv/
+__pycache__/
+*.tflite
+*.alexetai
+
+# Signing keys
+*.jks
+*.keystore
+*.p12
+*.pem
