@@ -19,7 +19,7 @@ You don't need a GitHub account. Do this on your phone:
 
 **AI search (optional).** It lets you find photos by describing them, for example "dog on the beach". Everything runs on your phone.
 
-1. On the same release page, under **Assets**, download **`siglip2-b16-224.alexetai`** (about 560 MB, Wi-Fi recommended).
+1. Open the **[first release (v1.0.0)](https://github.com/Anderinfera/Alexet/releases/tag/v1.0.0)** and under **Assets** download **`siglip2-b16-224.alexetai`** (about 560 MB, Wi-Fi recommended). The model is only there, newer releases have just the app.
 2. In Alexet tap the gear icon at the top to open **Settings**, then **Extra** → **AI search** → **Import AI model** and pick the downloaded file.
 3. Alexet then indexes your photos in the background, faster while the phone is charging.
 
@@ -132,7 +132,7 @@ Konto na GitHubie nie jest potrzebne. Zrób to na telefonie:
 
 **Wyszukiwanie AI (opcjonalnie).** Pozwala znaleźć zdjęcia po opisie, np. „pies na plaży”. Wszystko działa na telefonie.
 
-1. Na tej samej stronie, w **Assets**, pobierz **`siglip2-b16-224.alexetai`** (ok. 560 MB, najlepiej przez Wi-Fi).
+1. Otwórz **[pierwsze wydanie (v1.0.0)](https://github.com/Anderinfera/Alexet/releases/tag/v1.0.0)** i w **Assets** pobierz **`siglip2-b16-224.alexetai`** (ok. 560 MB, najlepiej przez Wi-Fi). Model jest tylko tam, nowsze wydania mają samą aplikację.
 2. W Alexecie dotknij ikony koła zębatego u góry, żeby otworzyć **Ustawienia**, potem **Dodatkowe** → **Wyszukiwanie AI** → **Wgraj model AI** i wybierz pobrany plik.
 3. Alexet zacznie indeksować zdjęcia w tle, szybciej gdy telefon się ładuje.
 
