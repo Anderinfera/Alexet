@@ -7,10 +7,18 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -115,8 +123,6 @@ private fun DrawScope.drawTopBar(screen: Rect, colors: PreviewColors, back: Bool
     return screen.top + h
 }
 
-private fun seg(t: Float, a: Float, b: Float): Float = ((t - a) / (b - a)).coerceIn(0f, 1f)
-private fun ease(x: Float): Float = x * x * (3f - 2f * x)
 
 /**
  * A phone going from its folders to a folder's content and back: a tap on a folder, the content
@@ -211,10 +217,50 @@ internal fun MiniLayoutPreview(
     modifier: Modifier = Modifier,
     showNames: Boolean = false,
     dimFocus: Boolean = false,
+    /** The option it stands for: a tap opens the picture enlarged with this explanation. */
+    infoTitle: Int? = null,
+    infoBody: Int? = null,
+) {
+    if (infoTitle == null || infoBody == null) {
+        MiniLayoutCanvas(device, folderColumns, fileColumns, focus, modifier, showNames, dimFocus)
+        return
+    }
+    var open by rememberSaveable { mutableStateOf(false) }
+    MiniLayoutCanvas(
+        device, folderColumns, fileColumns, focus,
+        modifier.clip(RoundedCornerShape(6.dp)).clickable { open = true },
+        showNames, dimFocus,
+    )
+    if (open) {
+        PreviewInfoCard(
+            title = stringResource(infoTitle),
+            body = stringResource(infoBody),
+            onDismiss = { open = false },
+            previewWidth = miniLayoutWidth(device),
+            previewHeight = miniLayoutHeight(device),
+        ) { scaled ->
+            MiniLayoutCanvas(device, folderColumns, fileColumns, focus, scaled, showNames, dimFocus)
+        }
+    }
+}
+
+private fun miniLayoutWidth(device: PreviewDevice) = if (device == PreviewDevice.PHONE) 26.dp else 54.dp
+
+private fun miniLayoutHeight(device: PreviewDevice) = if (device == PreviewDevice.PHONE) 44.dp else 38.dp
+
+@Composable
+private fun MiniLayoutCanvas(
+    device: PreviewDevice,
+    folderColumns: Int,
+    fileColumns: Int,
+    focus: PreviewFocus,
+    modifier: Modifier,
+    showNames: Boolean,
+    dimFocus: Boolean,
 ) {
     val colors = previewColors()
-    val w = if (device == PreviewDevice.PHONE) 26.dp else 54.dp
-    val h = if (device == PreviewDevice.PHONE) 44.dp else 38.dp
+    val w = miniLayoutWidth(device)
+    val h = miniLayoutHeight(device)
     Canvas(modifier.size(w, h)) {
         val screen = drawDevice(device, colors)
         val u = 1.dp.toPx()

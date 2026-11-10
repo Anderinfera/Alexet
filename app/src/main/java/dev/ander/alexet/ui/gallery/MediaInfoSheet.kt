@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import android.media.ExifInterface
 import android.media.MediaMetadataRetriever
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,15 +13,22 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
@@ -29,6 +37,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import dev.ander.alexet.R
 import dev.ander.alexet.data.Album
+import dev.ander.alexet.data.AlbumIds
 import dev.ander.alexet.data.FolderDetails
 import dev.ander.alexet.data.GalleryMedia
 import dev.ander.alexet.ui.components.LocalVideoDurationFormat
@@ -67,14 +76,20 @@ fun MediaInfoSheet(
         Column(
             Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
+                // No stretch at the ends: with the sheet's own drag it shook the sheet when the
+                // list (two files compared) was pulled up slowly.
+                .verticalScroll(rememberScrollState(), overscrollEffect = null)
                 .padding(horizontal = 24.dp, vertical = 8.dp)
                 .padding(bottom = 32.dp),
         ) {
             when {
                 media.size == 1 && albums.isEmpty() -> SingleFileInfo(media.first())
                 albums.size == 1 && media.isEmpty() -> SingleAlbumInfo(albums.first(), details, foldersSize)
-                else -> SelectionSummary(media, albums, foldersSize)
+                else -> {
+                    SelectionSummary(media, albums, foldersSize)
+                    // Two files: compared detail by detail under the totals.
+                    if (media.size == 2 && albums.isEmpty()) FileComparison(media[0], media[1])
+                }
             }
         }
     }
@@ -83,33 +98,8 @@ fun MediaInfoSheet(
 @Composable
 internal fun SingleFileInfo(item: GalleryMedia) {
     val context = LocalContext.current
-    val resolution by produceState<Pair<Int, Int>?>(
-        initialValue = if (item.width > 0 && item.height > 0) item.width to item.height else null,
-        key1 = item.id,
-    ) {
-        if (item.width > 0 && item.height > 0) {
-            value = item.width to item.height
-            return@produceState
-        }
-        value = withContext(Dispatchers.IO) {
-            resolveMediaDimensions(context, item)
-        }
-    }
-
-    val durationMs by produceState(
-        initialValue = if (item.durationMs > 0) item.durationMs else 0L,
-        key1 = item.id,
-    ) {
-        if (item.durationMs > 0) {
-            value = item.durationMs
-            return@produceState
-        }
-        if (item.isVideo) {
-            value = withContext(Dispatchers.IO) {
-                resolveVideoDuration(context, item)
-            }
-        }
-    }
+    val resolution = rememberResolution(item)
+    val durationMs = rememberDurationMs(item)
 
     // A tap copies the name (with its extension) to the clipboard.
     Text(
@@ -124,23 +114,11 @@ internal fun SingleFileInfo(item: GalleryMedia) {
             .clickable { copyFileName(context, item.displayName) }
             .padding(horizontal = 8.dp, vertical = 4.dp),
     )
-    // A file from another app whose place is unknown: the address it came by, not a bare name.
-    val path = item.storagePath.takeIf { '/' in it || item.uri.scheme != "content" } ?: item.uri.toString()
-    InfoRow(stringResource(R.string.info_path), path)
+    InfoRow(stringResource(R.string.info_path), pathText(item))
+    originalPathOf(item)?.let { InfoRow(stringResource(R.string.info_original_path), it) }
     InfoRow(stringResource(R.string.size), formatBytes(item.sizeBytes))
-    
-    val res = resolution
-    if (res != null && res.first > 0 && res.second > 0) {
-        val w = res.first
-        val h = res.second
-        val mp = (w.toLong() * h.toLong()) / 1_000_000.0
-        val text = if (mp >= 0.1) {
-            "$w × $h (${String.format(Locale.US, "%.1f", mp)} MP)"
-        } else {
-            "$w × $h"
-        }
-        InfoRow(stringResource(R.string.info_resolution), text)
-    }
+
+    resolutionText(resolution)?.let { InfoRow(stringResource(R.string.info_resolution), it) }
 
     InfoRow(
         stringResource(R.string.info_modified),
@@ -154,6 +132,160 @@ internal fun SingleFileInfo(item: GalleryMedia) {
     InfoRow(stringResource(R.string.info_folder), item.bucketName.ifBlank { "—" })
     if (item.dateAddedMs > 0L) {
         InfoRow(stringResource(R.string.info_added), formatDate(item.dateAddedMs))
+    }
+}
+
+/** Width × height as shown; read from the file when the list doesn't have it. */
+@Composable
+private fun rememberResolution(item: GalleryMedia): Pair<Int, Int>? {
+    val context = LocalContext.current
+    val resolution by produceState(
+        initialValue = if (item.width > 0 && item.height > 0) item.width to item.height else null,
+        key1 = item.id,
+    ) {
+        if (item.width > 0 && item.height > 0) {
+            value = item.width to item.height
+            return@produceState
+        }
+        value = withContext(Dispatchers.IO) {
+            resolveMediaDimensions(context, item)
+        }
+    }
+    return resolution
+}
+
+/** A video's length (0 for a photo); read from the file when the list doesn't have it. */
+@Composable
+private fun rememberDurationMs(item: GalleryMedia): Long {
+    val context = LocalContext.current
+    val durationMs by produceState(
+        initialValue = if (item.durationMs > 0) item.durationMs else 0L,
+        key1 = item.id,
+    ) {
+        if (item.durationMs > 0) {
+            value = item.durationMs
+            return@produceState
+        }
+        if (item.isVideo) {
+            value = withContext(Dispatchers.IO) {
+                resolveVideoDuration(context, item)
+            }
+        }
+    }
+    return durationMs
+}
+
+/** Where each trashed file was before it was deleted, by its id; empty when not provided. */
+val LocalTrashOriginalPaths = compositionLocalOf<Map<Long, String>> { emptyMap() }
+
+/** The path a file in the trash was deleted from; null for any other file. */
+@Composable
+private fun originalPathOf(item: GalleryMedia): String? =
+    if (item.bucketId == AlbumIds.TRASH) LocalTrashOriginalPaths.current[item.id]?.takeIf { it.isNotBlank() } else null
+
+/** A file from another app whose place is unknown: the address it came by, not a bare name. */
+private fun pathText(item: GalleryMedia): String =
+    item.storagePath.takeIf { '/' in it || item.uri.scheme != "content" } ?: item.uri.toString()
+
+/** "4000 × 3000 (12.0 MP)"; null when the size is unknown. */
+private fun resolutionText(resolution: Pair<Int, Int>?): String? {
+    val (w, h) = resolution?.takeIf { it.first > 0 && it.second > 0 } ?: return null
+    val mp = (w.toLong() * h.toLong()) / 1_000_000.0
+    return if (mp >= 0.1) "$w × $h (${String.format(Locale.US, "%.1f", mp)} MP)" else "$w × $h"
+}
+
+/**
+ * Two files under a "T": a line across, and from its middle a line down with file A on the left
+ * and B on the right. Their names on top, then each detail: its label over the line, A's value
+ * left of it and B's right of it ("—" where a file has none, such as a photo's length).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FileComparison(a: GalleryMedia, b: GalleryMedia) {
+    val context = LocalContext.current
+    val durationFormat = LocalVideoDurationFormat.current
+    val resolutionA = rememberResolution(a)
+    val resolutionB = rememberResolution(b)
+    val durationA = rememberDurationMs(a)
+    val durationB = rememberDurationMs(b)
+    fun duration(item: GalleryMedia, ms: Long) = if (item.isVideo && ms > 0L) formatDuration(ms, durationFormat) else NONE
+    fun added(item: GalleryMedia) = if (item.dateAddedMs > 0L) formatDate(item.dateAddedMs) else NONE
+    val originalA = originalPathOf(a)
+    val originalB = originalPathOf(b)
+    val originalLabel = stringResource(R.string.info_original_path)
+    val rows = listOfNotNull(
+        Triple(stringResource(R.string.info_path), pathText(a), pathText(b)),
+        // Either file in the trash: where it was deleted from.
+        if (originalA != null || originalB != null) Triple(originalLabel, originalA ?: NONE, originalB ?: NONE) else null,
+        Triple(stringResource(R.string.size), formatBytes(a.sizeBytes), formatBytes(b.sizeBytes)),
+        Triple(
+            stringResource(R.string.info_resolution),
+            resolutionText(resolutionA) ?: NONE,
+            resolutionText(resolutionB) ?: NONE,
+        ),
+        Triple(stringResource(R.string.info_modified), formatModifiedWithTaken(a), formatModifiedWithTaken(b)),
+        Triple(stringResource(R.string.duration), duration(a, durationA), duration(b, durationB)),
+        Triple(stringResource(R.string.info_type), a.mimeType.ifBlank { NONE }, b.mimeType.ifBlank { NONE }),
+        Triple(stringResource(R.string.info_folder), a.bucketName.ifBlank { NONE }, b.bucketName.ifBlank { NONE }),
+        Triple(stringResource(R.string.info_added), added(a), added(b)),
+    )
+    val line = MaterialTheme.colorScheme.outlineVariant
+    // The label sits on the line down: the sheet's colour behind it breaks the line there.
+    val sheet = BottomSheetDefaults.ContainerColor
+    Spacer(Modifier.height(16.dp))
+    HorizontalDivider(color = line)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .drawBehind {
+                val x = size.width / 2f
+                drawLine(line, Offset(x, 0f), Offset(x, size.height), strokeWidth = 1.dp.toPx())
+            }
+            .padding(bottom = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        ComparisonPair(a.displayName, b.displayName, isName = true) { copyFileName(context, it) }
+        rows.forEach { (label, valueA, valueB) ->
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .padding(top = 10.dp)
+                    .background(sheet)
+                    .padding(horizontal = 8.dp, vertical = 2.dp),
+            )
+            ComparisonPair(valueA, valueB) { copyInfo(context, it) }
+        }
+    }
+}
+
+private const val NONE = "—"
+
+/** A's value right-aligned against the line, B's left-aligned; a tap copies one. */
+@Composable
+private fun ComparisonPair(left: String, right: String, isName: Boolean = false, onCopy: (String) -> Unit) {
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+    val style = if (isName) MaterialTheme.typography.titleSmall else MaterialTheme.typography.bodyMedium
+    val color = if (isName) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        listOf(left, right).forEachIndexed { i, value ->
+            val copyable = value != NONE
+            Text(
+                text = value,
+                style = style,
+                fontWeight = if (isName) FontWeight.Bold else null,
+                color = color,
+                textAlign = if (i == 0) TextAlign.End else TextAlign.Start,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = if (i == 0) 0.dp else 10.dp, end = if (i == 0) 10.dp else 0.dp)
+                    .clip(shape)
+                    .clickable(enabled = copyable) { onCopy(value) }
+                    .padding(horizontal = 4.dp, vertical = 4.dp),
+            )
+        }
     }
 }
 

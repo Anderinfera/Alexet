@@ -5,6 +5,7 @@ import android.net.Uri
 import dev.ander.alexet.ui.components.LocalLightMode
 import dev.ander.alexet.ui.components.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import dev.ander.alexet.ui.components.animateFloatAsState
 import androidx.compose.runtime.derivedStateOf
@@ -96,6 +97,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.zIndex
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -367,7 +369,18 @@ fun GalleryApp(
         // The larger tiles of the two grids decide the thumbnail size.
         columns = minOf(uiState.settings.gridColumns, uiState.settings.fileColumns),
     )
+    // The video a quick edit is exporting: its tile shows the forge.
+    val quickEditTarget by viewModel.quickEditTarget.collectAsState()
+    val quickEditTile = remember(quickEditTarget) {
+        quickEditTarget?.let { QuickEditTile(it, viewModel.quickEditPercent) }
+    }
+    // Where each trashed file was: its info shows the path it was deleted from.
+    val trashOriginalPaths = remember(uiState.trashedItems) {
+        uiState.trashedItems.associate { it.id to it.originalPath }
+    }
     CompositionLocalProvider(
+        LocalQuickEditTile provides quickEditTile,
+        LocalTrashOriginalPaths provides trashOriginalPaths,
         LocalThumbnailPx provides thumbPx,
         LocalLightMode provides uiState.settings.lightMode,
         LocalFolderThumbEpoch provides uiState.folderThumbEpoch,
@@ -401,6 +414,14 @@ fun GalleryApp(
         }
     }
     val wide = if (foldable.isTabletop) false else (foldable.showListDetail || maxWidth >= 600.dp)
+    // A finished quick edit's notification: its folder, opened as this layout opens folders.
+    val showFolderRequest by viewModel.showFolderRequest.collectAsState()
+    LaunchedEffect(showFolderRequest) {
+        showFolderRequest?.let {
+            viewModel.showFolder(it, wide)
+            viewModel.consumeShowFolderRequest()
+        }
+    }
     // A hinge sensor or a reported fold: a foldable, so its settings are shown from now on.
     val foldableContext = LocalContext.current
     val hasFold = foldable.foldingFeature != null
@@ -579,6 +600,7 @@ fun GalleryApp(
                     viewModel.requestDeleteConsent(sender)
                 },
             )
+            AlbumPickMode.RESTORE -> viewModel.restoreSelectedTrashToTree(uri)
         }
         viewModel.releaseHiddenPicker()
         albumPick = null
@@ -687,7 +709,9 @@ fun GalleryApp(
             val tileColumns = minOf(ready.settings.gridColumns, ready.settings.fileColumns)
             prefetchThumbnails(context, covers, thumbnailPx(ready.settings.highResThumbnails, context.resources.displayMetrics.widthPixels, tileColumns))
         }
-        val remaining = STARTUP_LOADER_MIN_MS - (SystemClock.elapsedRealtime() - shownAt)
+        // Light mode: the folders as soon as they are ready, not after a whole turn of the loader.
+        val minLoaderMs = if (ready.settings.lightMode) 0L else STARTUP_LOADER_MIN_MS
+        val remaining = minLoaderMs - (SystemClock.elapsedRealtime() - shownAt)
         if (remaining > 0) delay(remaining)
         viewModel.markStartupRevealed()
         startupRevealed = true
@@ -763,6 +787,7 @@ fun GalleryApp(
                 onOpenTrash = { viewModel.openTrash(wide) },
                 inTrash = uiState.inTrash,
                 onRestore = viewModel::restoreSelectedTrash,
+                onRestoreTo = { albumPick = AlbumPickMode.RESTORE },
                 selectionCount = transientSelectionCount ?: uiState.selectionCount,
                 isMarqueeActive = transientSelectionCount != null,
                 totalCount = when {
@@ -870,6 +895,15 @@ fun GalleryApp(
                                 viewModel.openEditor(selectedPhotos.first())
                                 viewModel.clearSelection()
                             }
+                        }
+                    } else null
+                },
+                onQuickEdit = run {
+                    val single = uiState.selectedFiles.singleOrNull()
+                    if (single != null && uiState.selectedAlbumIds.isEmpty() && dev.ander.alexet.data.QuickEdit.supports(single)) {
+                        {
+                            viewModel.openQuickEdit(single)
+                            viewModel.clearSelection()
                         }
                     } else null
                 },
@@ -1061,7 +1095,7 @@ fun GalleryApp(
                             onPlayVideo = {
                                 focusManager.clearFocus(force = true)
                                 keyboardController?.hide()
-                                viewModel.playInNextPlayer(context, it)
+                                viewModel.playExternally(context, it)
                             },
                             onToggleSelect = viewModel::toggleFileSelected,
                             onMarqueeFiles = viewModel::setFileSelection,
@@ -1255,7 +1289,26 @@ fun GalleryApp(
             }
         }
     }
-    var lastViewer by remember { mutableStateOf<GalleryMedia?>(null) }
+    // A newer version from GitHub (checked once a day, or with "Check now" in the settings).
+    val updateCardShown by viewModel.updateCardShown.collectAsState()
+    if (updateCardShown) {
+        val updateState by viewModel.updateState.collectAsState()
+        UpdateCard(state = updateState, onInstall = viewModel::installUpdate, onClose = viewModel::closeUpdateCard)
+    }
+    // Quick edit of one photo or video (viewer menu, or one file selected).
+    val quickEditSource by viewModel.quickEdit.collectAsState()
+    quickEditSource?.let { source ->
+        QuickEditDialog(
+            source = source,
+            photoBytes = { settings -> viewModel.quickEditPhotoBytes(source, settings) },
+            fitPhoto = { settings, target -> viewModel.quickEditFitPhoto(source, settings, target) },
+            onSave = { settings, overwrite ->
+                viewModel.saveQuickEdit(source, settings, overwrite) { sender -> viewModel.requestDeleteConsent(sender) }
+            },
+            onDismiss = viewModel::closeQuickEdit,
+        )
+    }
+        var lastViewer by remember { mutableStateOf<GalleryMedia?>(null) }
     var lastViewerList by remember { mutableStateOf<List<GalleryMedia>>(emptyList()) }
     if (viewer != null) {
         lastViewer = viewer
@@ -1279,7 +1332,7 @@ fun GalleryApp(
             ViewerPane(
                 media = effectivePagerMedia,
                 selected = currentViewer,
-                nextPlayerInstalled = uiState.nextPlayerInstalled,
+                externalPlayerAvailable = uiState.externalPlayerAvailable,
                 onSelect = { viewModel.selectMedia(it.id) },
                 onClose = viewModel::closeViewer,
                 onEdit = { media ->
@@ -1289,6 +1342,7 @@ fun GalleryApp(
                         viewModel.openEditor(media)
                     }
                 },
+                onQuickEdit = viewModel::openQuickEdit,
                 onDelete = { media ->
                     viewerDeleteTarget = media
                     deleteFromViewer = true
@@ -1302,7 +1356,7 @@ fun GalleryApp(
                         showDelete = true
                     }
                 },
-                onPlayVideo = { viewModel.playInNextPlayer(context, it) },
+                onPlayVideo = { viewModel.playExternally(context, it) },
                 onShare = viewModel::share,
                 onSetAs = { media -> setAsMediaId = media.id },
                 autoplayGifs = uiState.settings.autoplayGifs,
@@ -1378,9 +1432,11 @@ fun GalleryApp(
                         allowOverwrite = !editCopyOnly,
                         onDirtyChange = viewModel::setEditorDirty,
                         onSave = { editState, overwrite ->
-                            viewModel.saveEditedImage(editState, overwrite) { sender ->
-                                viewModel.requestDeleteConsent(sender)
-                            }
+                            viewModel.saveEditedImage(
+                                editState,
+                                overwrite,
+                                launchDelete = { sender -> viewModel.requestDeleteConsent(sender) },
+                            )
                         },
                         onClose = {
                             editorTab = PhotoEditorTab.ASPECT
@@ -1533,12 +1589,12 @@ fun GalleryApp(
         val target = viewerDeleteTarget
         val isTrash = uiState.inTrash ||
             target?.bucketId == AlbumIds.TRASH ||
-            target?.absolutePath?.contains(".alexet_trash", ignoreCase = true) == true ||
+            target?.absolutePath?.let { dev.ander.alexet.data.hasTrashMarker(it) } == true ||
             target?.bucketName?.equals(".alexet_trash", ignoreCase = true) == true ||
             (target != null && uiState.trashedItems.any { it.id == target.id }) ||
             (target == null && uiState.selectedFiles.isNotEmpty() && uiState.selectedFiles.all {
                 it.bucketId == AlbumIds.TRASH ||
-                it.absolutePath?.contains(".alexet_trash", ignoreCase = true) == true ||
+                it.absolutePath?.let { dev.ander.alexet.data.hasTrashMarker(it) } == true ||
                 it.bucketName.equals(".alexet_trash", ignoreCase = true) ||
                 uiState.trashedItems.any { t -> t.id == it.id }
             })
@@ -1701,6 +1757,7 @@ fun GalleryApp(
                         AlbumPickMode.MOVE -> viewModel.moveSelectionToAlbum(id) { sender ->
                             viewModel.requestWriteConsent(sender)
                         }
+                        AlbumPickMode.RESTORE -> viewModel.restoreSelectedTrashTo(id)
                     }
                 }
                 viewModel.releaseHiddenPicker()
@@ -1781,60 +1838,74 @@ fun GalleryApp(
             onIndexFolders = viewModel::changeSmartIndexFolders,
             onIndexPaused = viewModel::setSmartIndexPaused,
         )
-        SettingsScreen(
-            settings = uiState.settings,
-            albums = uiState.albums,
-            allAlbums = uiState.allAlbums,
-            wide = wide,
-            onChangeAnonymousFolders = viewModel::changeAnonymousFolders,
-            onToggleAnonymousFolder = viewModel::toggleAnonymousFolder,
-            onRandomizeFileNamesInPrivateFolders = viewModel::setRandomizeFileNamesInPrivateFolders,
-            onStripExifInPrivateFolders = viewModel::setStripExifInPrivateFolders,
-            onBack = viewModel::closeSettings,
-            onContentViewMode = viewModel::setContentViewMode,
-            onMultiFolderMemory = viewModel::setMultiFolderMemory,
-            onPanelSplitPercent = viewModel::setPanelSplitPercent,
-            onAutoFoldSplitEnabled = viewModel::setAutoFoldSplitEnabled,
-            onFoldSplitAngleThreshold = viewModel::setFoldSplitAngleThreshold,
-            onShowFoldableSettings = viewModel::setShowFoldableSettings,
-            smartSearch = smartSearchUi,
-            onExpandGrid = viewModel::setExpandGrid,
-            onShowFileNames = viewModel::setShowFileNames,
-            onOperationsFollowSelectionOrder = viewModel::setOperationsFollowSelectionOrder,
-            onVideoDurationFormat = viewModel::setVideoDurationFormat,
-            onGridColumns = viewModel::setGridColumns,
-            onFileColumns = viewModel::setFileColumns,
-            onShowAllFiles = viewModel::setShowAllFiles,
-            onShowOtherFileFolders = viewModel::setShowOtherFileFolders,
-            onFoldableFileColumns = viewModel::setFoldableFileColumns,
-            onFileSelectMode = viewModel::setFileSelectMode,
-            onShowHidden = viewModel::setShowHidden,
-            onHideFavoritesFolder = viewModel::setHideFavoritesFolder,
-            onSaveSelectionActionsConfig = viewModel::setSelectionActionsConfig,
-            onToggleSelectionActionVisibility = viewModel::toggleSelectionActionVisibility,
-            onSearchFilesFullScreen = viewModel::setSearchFilesFullScreen,
-            onVideoDoubleClickToGallery = viewModel::setVideoDoubleClickToGallery,
-            onRememberFolderScrollAcrossSessions = viewModel::setRememberFolderScrollAcrossSessions,
-            onNewContentScrollsToTop = viewModel::setNewContentScrollsToTop,
-            onAutoplayGifs = viewModel::setAutoplayGifs,
-            onNewpipeFolder = viewModel::setNewpipeFolder,
-            onShowNavArrows = viewModel::setShowNavArrows,
-            onStripExifOnShare = viewModel::setStripExifOnShare,
-            onSaveWallpaperResolutions = viewModel::setCustomWallpaperResolutions,
-            onExportConfig = exportConfigAction,
-            onDebugLoggingChange = viewModel::setDebugLogging,
-            onClearDebugLog = viewModel::clearDebugLog,
-            onImportConfig = importConfigAction,
-            onResetThumbnails = viewModel::rescanLibrary,
-            onScrollerOnRight = viewModel::setScrollerOnRight,
-            onScrollerEnabled = viewModel::setScrollerEnabled,
-            onScrollerSmooth = viewModel::setScrollerSmooth,
-            onHighResThumbnails = viewModel::setHighResThumbnails,
-            onLightMode = viewModel::setLightMode,
-            onUpdatePlayerConfig = viewModel::updatePlayerConfig,
-            onUpdateHiddenCover = viewModel::updateHiddenCover,
-            onPickHiddenCoverImage = { viewModel.setHiddenCoverImage(context, it) },
-        )
+        val appTools = remember(viewModel) {
+            AppTools(
+                duplicates = viewModel.duplicateScan,
+                onFindDuplicates = viewModel::findDuplicates,
+                onCancelDuplicates = viewModel::cancelDuplicates,
+                onTrashDuplicates = viewModel::trashDuplicates,
+                updates = viewModel.updateState,
+                onCheckUpdates = viewModel::setCheckUpdates,
+                onCheckUpdatesNow = viewModel::checkUpdatesNow,
+            )
+        }
+        CompositionLocalProvider(LocalAppTools provides appTools) {
+            SettingsScreen(
+                settings = uiState.settings,
+                albums = uiState.albums,
+                allAlbums = uiState.allAlbums,
+                wide = wide,
+                onChangeAnonymousFolders = viewModel::changeAnonymousFolders,
+                onToggleAnonymousFolder = viewModel::toggleAnonymousFolder,
+                onRandomizeFileNamesInPrivateFolders = viewModel::setRandomizeFileNamesInPrivateFolders,
+                onStripExifInPrivateFolders = viewModel::setStripExifInPrivateFolders,
+                onBack = viewModel::closeSettings,
+                onContentViewMode = viewModel::setContentViewMode,
+                onMultiFolderMemory = viewModel::setMultiFolderMemory,
+                onPanelSplitPercent = viewModel::setPanelSplitPercent,
+                onAutoFoldSplitEnabled = viewModel::setAutoFoldSplitEnabled,
+                onDynamicSplit = viewModel::setDynamicSplit,
+                onFoldSplitAngleThreshold = viewModel::setFoldSplitAngleThreshold,
+                onShowFoldableSettings = viewModel::setShowFoldableSettings,
+                smartSearch = smartSearchUi,
+                onExpandGrid = viewModel::setExpandGrid,
+                onShowFileNames = viewModel::setShowFileNames,
+                onOperationsFollowSelectionOrder = viewModel::setOperationsFollowSelectionOrder,
+                onVideoDurationFormat = viewModel::setVideoDurationFormat,
+                onGridColumns = viewModel::setGridColumns,
+                onFileColumns = viewModel::setFileColumns,
+                onShowAllFiles = viewModel::setShowAllFiles,
+                onShowOtherFileFolders = viewModel::setShowOtherFileFolders,
+                onFoldableFileColumns = viewModel::setFoldableFileColumns,
+                onFileSelectMode = viewModel::setFileSelectMode,
+                onShowHidden = viewModel::setShowHidden,
+                onHideFavoritesFolder = viewModel::setHideFavoritesFolder,
+                onSaveSelectionActionsConfig = viewModel::setSelectionActionsConfig,
+                onToggleSelectionActionVisibility = viewModel::toggleSelectionActionVisibility,
+                onSearchFilesFullScreen = viewModel::setSearchFilesFullScreen,
+                onVideoDoubleClickToGallery = viewModel::setVideoDoubleClickToGallery,
+                onRememberFolderScrollAcrossSessions = viewModel::setRememberFolderScrollAcrossSessions,
+                onNewContentScrollsToTop = viewModel::setNewContentScrollsToTop,
+                onAutoplayGifs = viewModel::setAutoplayGifs,
+                onNewpipeFolder = viewModel::setNewpipeFolder,
+                onShowNavArrows = viewModel::setShowNavArrows,
+                onStripExifOnShare = viewModel::setStripExifOnShare,
+                onSaveWallpaperResolutions = viewModel::setCustomWallpaperResolutions,
+                onExportConfig = exportConfigAction,
+                onDebugLoggingChange = viewModel::setDebugLogging,
+                onClearDebugLog = viewModel::clearDebugLog,
+                onImportConfig = importConfigAction,
+                onResetThumbnails = viewModel::rescanLibrary,
+                onScrollerOnRight = viewModel::setScrollerOnRight,
+                onScrollerEnabled = viewModel::setScrollerEnabled,
+                onScrollerSmooth = viewModel::setScrollerSmooth,
+                onHighResThumbnails = viewModel::setHighResThumbnails,
+                onLightMode = viewModel::setLightMode,
+                onUpdatePlayerConfig = viewModel::updatePlayerConfig,
+                onUpdateHiddenCover = viewModel::updateHiddenCover,
+                onPickHiddenCoverImage = { viewModel.setHiddenCoverImage(context, it) },
+            )
+        }
     }
     AnimatedVisibility(
         visible = !startupRevealed || coldStarting,
@@ -2084,19 +2155,39 @@ private fun GalleryBody(
         return
     }
 
-    // Smooth custom% → 50/50 (was snap() — skipped mid frames while the window resized).
-    val leftWeight by animateFloatAsState(
-        targetValue = foldSplitTarget,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMedium,
-        ),
-        label = "leftWeight",
-    )
+    // "Dynamic edge": nothing open on the right yet → 50/50; a folder there → the user's split.
+    val contentPaneEmpty = when (uiState.settings.contentViewMode) {
+        ContentViewMode.LAST_FOLDER, ContentViewMode.CURRENT_SESSION -> albumsById[uiState.contentFolderId] == null
+        ContentViewMode.MULTI_FOLDER, ContentViewMode.CLICK_DRAG -> uiState.openFolderIds.isEmpty()
+        ContentViewMode.EXPAND_FOLDERS -> false
+    }
+    val dynamicSplit = uiState.settings.dynamicSplit && !uiState.settings.lightMode
+    val splitTarget = if (dynamicSplit && contentPaneEmpty) 0.5f else foldSplitTarget
+    // Read only while measuring: a moving edge re-measures the panes, it never recomposes them.
+    val lightMode = LocalLightMode.current
+    val leftFraction = remember { Animatable(splitTarget) }
+    LaunchedEffect(splitTarget, lightMode) {
+        if (lightMode) {
+            leftFraction.snapTo(splitTarget)
+        } else {
+            leftFraction.animateTo(
+                targetValue = splitTarget,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    // Between Medium and MediumLow: calm, but over in about a third of a second.
+                    stiffness = 700f,
+                    visibilityThreshold = 0.001f,
+                ),
+            )
+        }
+    }
 
-    Row(Modifier.fillMaxSize()) {
+    // Read by the tiles only: they recompose when the edge starts and stops moving, not per frame.
+    val paneResizing = remember { derivedStateOf { leftFraction.isRunning } }
+    CompositionLocalProvider(LocalPaneResizing provides paneResizing) {
+    TwoPaneLayout(leftFraction = { leftFraction.value }, dividerWidth = 3.dp) {
         Surface(
-            modifier = Modifier.weight(leftWeight).fillMaxHeight(),
+            modifier = Modifier.fillMaxHeight(),
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
         ) {
             folderLayer(Modifier.fillMaxSize())
@@ -2106,7 +2197,7 @@ private fun GalleryBody(
             color = MaterialTheme.colorScheme.outline,
         )
         Surface(
-            modifier = Modifier.weight(1f - leftWeight).fillMaxHeight(),
+            modifier = Modifier.fillMaxHeight(),
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 3.dp,
         ) {
@@ -2134,6 +2225,7 @@ private fun GalleryBody(
                 modifier = Modifier.fillMaxSize(),
             )
         }
+    }
     }
 }
 

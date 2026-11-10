@@ -146,13 +146,14 @@ class SettingsCategoryAndPreviewTest {
     @Test
     fun testSettingsCategoryEnumDefinitions() {
         val categories = SettingsCategory.values()
-        assertEquals(6, categories.size)
+        assertEquals(7, categories.size)
         assertEquals(SettingsCategory.VIEW, categories[0])
         assertEquals(SettingsCategory.FOLDERS, categories[1])
-        assertEquals(SettingsCategory.PRIVACY, categories[2])
-        assertEquals(SettingsCategory.PLAYER, categories[3])
-        assertEquals(SettingsCategory.EXTRA, categories[4])
-        assertEquals(SettingsCategory.SYSTEM, categories[5])
+        assertEquals(SettingsCategory.SELECTION, categories[2])
+        assertEquals(SettingsCategory.VIEWING, categories[3])
+        assertEquals(SettingsCategory.SEARCH, categories[4])
+        assertEquals(SettingsCategory.PRIVACY, categories[5])
+        assertEquals(SettingsCategory.APP, categories[6])
 
         for (cat in categories) {
             assertTrue("Title res must be valid for $cat", cat.titleRes != 0)

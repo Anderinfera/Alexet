@@ -87,9 +87,9 @@ class AlexetApplication : Application(), SingletonImageLoader.Factory {
     /**
      * Shrink Coil memory thumbnails when the system is under background memory pressure so LMK is
      * less likely to kill the process while Alexet sits in the background.
-     * Local thumbnails never reach Coil's disk cache (only network results are written there), so
-     * the memory cache is only halved on BACKGROUND (Android 14+ sends it soon after every app
-     * switch) and cleared fully on COMPLETE; otherwise every tile reloads after returning.
+     * The memory cache is only halved on BACKGROUND (Android 14+ sends it soon after every app
+     * switch) and cleared fully on COMPLETE; otherwise every tile reloads after returning (from
+     * the thumbnails kept in Coil's disk cache, see MediaStoreThumbnailFetcher).
      * FolderCoverCache is preserved so folder thumbnails do not flicker upon return.
      */
     @Suppress("DEPRECATION")

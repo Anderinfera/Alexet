@@ -440,6 +440,13 @@ class SmartSearch(context: Context, private val settings: SettingsStore, private
         idx?.search(vector, limit, minCosine(manifest)) ?: emptyList()
     }
 
+    /** The indexed photos' embeddings (a copy), or null without a model or an index. */
+    suspend fun embeddings(): dev.ander.alexet.data.DuplicateFinder.Embeddings? = withContext(Dispatchers.Default) {
+        val manifest = (_status.value.model as? ModelState.Ready)?.manifest ?: return@withContext null
+        ensureIndexLoaded(manifest)
+        engineLock.withLock { index }?.snapshot()
+    }
+
     private var releaseJob: Job? = null
 
     /** The text encoder is freed a while after the last query. */

@@ -128,7 +128,9 @@ fun MediaThumbnail(
     val isEncrypted = media.absolutePath?.endsWith(dev.ander.alexet.data.SecureFolderManager.ENC_EXTENSION, ignoreCase = true) == true ||
         media.displayName.endsWith(dev.ander.alexet.data.SecureFolderManager.ENC_EXTENSION, ignoreCase = true) ||
         media.uri.path?.endsWith(dev.ander.alexet.data.SecureFolderManager.ENC_EXTENSION, ignoreCase = true) == true
-    val request = remember(media.id, media.isVideo, thumbnail, thumbPx, resolvedKey, thumbGeneration, attempt, media.absolutePath, skipLoad, pinnedCover != null, isEncrypted, knownBroken) {
+    // Light mode: a thumbnail appears at once, without fading in over two drawn layers.
+    val lightMode = LocalLightMode.current
+    val request = remember(media.id, media.isVideo, thumbnail, thumbPx, resolvedKey, thumbGeneration, attempt, media.absolutePath, skipLoad, pinnedCover != null, isEncrypted, knownBroken, lightMode) {
         if (skipLoad || pinnedCover != null || knownBroken) return@remember null
         val resolvedPath = media.absolutePath ?: run {
             val root = android.os.Environment.getExternalStorageDirectory()
@@ -167,7 +169,7 @@ fun MediaThumbnail(
             .diskCacheKey("$resolvedKey-g$thumbGeneration$sizeSuffix")
             .memoryCachePolicy(CachePolicy.ENABLED)
             .diskCachePolicy(if (isEncrypted) CachePolicy.DISABLED else CachePolicy.ENABLED)
-            .crossfade(thumbnail && attempt == 0)
+            .crossfade(thumbnail && attempt == 0 && !lightMode)
             .apply {
                 if (thumbnail) {
                     size(Size(thumbPx, thumbPx))
@@ -180,6 +182,18 @@ fun MediaThumbnail(
                 }
             }
             .build()
+    }
+    // A photo just tapped is already being decoded (ViewerPrefetch): its request waits for that
+    // decode and then finds the picture in the memory cache, instead of decoding it a second time.
+    val prefetch = remember(resolvedKey, thumbGeneration) {
+        if (thumbnail) null else ViewerPrefetch.running("$resolvedKey-g$thumbGeneration")
+    }
+    var prefetchDone by remember(prefetch) { mutableStateOf(prefetch == null) }
+    if (prefetch != null) {
+        LaunchedEffect(prefetch) {
+            runCatching { prefetch.await() }
+            prefetchDone = true
+        }
     }
     LaunchedEffect(failed, attempt) {
         if (failed && attempt < 3) {
@@ -214,7 +228,7 @@ fun MediaThumbnail(
                 contentScale = contentScale,
                 modifier = Modifier.fillMaxSize(),
             )
-        } else if (request != null) {
+        } else if (request != null && prefetchDone) {
             AsyncImage(
                 model = request,
                 contentDescription = media.displayName,
@@ -380,6 +394,7 @@ fun SquareThumbnail(
     isFavorite: Boolean = false,
     thumbGeneration: Int = LocalFolderThumbEpoch.current,
     skipLoad: Boolean = false,
+    showDuration: Boolean = true,
 ) {
     if (media.isOtherFile) {
         // Documents, archives, apps…: their own tile (type icon, preview, type badge).
@@ -390,6 +405,7 @@ fun SquareThumbnail(
         media = media,
         modifier = modifier.aspectRatio(1f),
         showPlayIcon = showPlayIcon,
+        showDuration = showDuration,
         isFavorite = isFavorite,
         thumbGeneration = thumbGeneration,
         skipLoad = skipLoad,

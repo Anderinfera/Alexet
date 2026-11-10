@@ -126,7 +126,8 @@ enum class SelectionAction(val key: String) {
     SET_AS("set_as"),
     STRIP_EXIF("strip_exif"),
     CONTENT_ORDER("content_order"),
-    SET_PRIVATE("set_private");
+    SET_PRIVATE("set_private"),
+    QUICK_EDIT("quick_edit");
 
     companion object {
         val DEFAULT_ORDER = listOf(
@@ -137,6 +138,7 @@ enum class SelectionAction(val key: String) {
             MOVE,
             RENAME,
             EDIT,
+            QUICK_EDIT,
             COPY,
             SELECT_ALL,
             HIDE,

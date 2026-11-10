@@ -391,6 +391,16 @@ internal class NomediaScanner(context: Context) {
         fun mimeOf(file: File): String? = mimeOf(file.name)
 
         /**
+         * A photo's or video's type: the system's, unless the system gave none or only a general
+         * one ("application/binary", "application/octet-stream"...) to a file named as one.
+         */
+        fun mediaMimeOf(systemMime: String?, name: String): String? {
+            val byName = mimeOf(name) ?: return systemMime
+            val general = systemMime.isNullOrBlank() || systemMime.startsWith("application/", ignoreCase = true)
+            return if (general) byName else systemMime
+        }
+
+        /**
          * [path] lies in a folder the walk for hidden folders never enters (thumbnails, trash and
          * system folders, app-private parts of Android/): a change there is never a hidden folder's.
          */

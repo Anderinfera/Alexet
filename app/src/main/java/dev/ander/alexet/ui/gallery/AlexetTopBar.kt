@@ -57,6 +57,7 @@ import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.AutoFixHigh
+import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.MovieFilter
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Security
@@ -148,6 +149,8 @@ fun AlexetTopBar(
     onOpenTrash: () -> Unit = {},
     inTrash: Boolean = false,
     onRestore: () -> Unit = {},
+    /** Restores the selected trashed files into a folder picked now. */
+    onRestoreTo: () -> Unit = {},
     selectionCount: Int = 0,
     isMarqueeActive: Boolean = false,
     totalCount: Int = 0,
@@ -175,6 +178,7 @@ fun AlexetTopBar(
     onStripExif: () -> Unit = {},
     onEdit: (() -> Unit)? = null,
     editLabelRes: Int? = null,
+    onQuickEdit: (() -> Unit)? = null,
     reorderingFolders: Boolean = false,
     contentOrderMode: Boolean = false,
     hasSelectedFolders: Boolean = false,
@@ -231,11 +235,13 @@ fun AlexetTopBar(
                 onClear = onUp,
                 onDelete = onDelete,
                 onRestore = onRestore,
+                onRestoreTo = onRestoreTo,
                 onShare = onShare,
                 onInfo = onInfo,
                 onStripExif = onStripExif,
                 onEdit = onEdit,
                 editLabelRes = editLabelRes,
+                onQuickEdit = onQuickEdit,
                 onRename = onRename,
                 onHide = onHide,
                 onUnhide = onUnhide,
@@ -685,11 +691,13 @@ private fun SelectionTopBar(
     onClear: () -> Unit,
     onDelete: () -> Unit,
     onRestore: () -> Unit = {},
+    onRestoreTo: () -> Unit = {},
     onShare: () -> Unit,
     onInfo: () -> Unit,
     onStripExif: () -> Unit = {},
     onEdit: (() -> Unit)? = null,
     editLabelRes: Int? = null,
+    onQuickEdit: (() -> Unit)? = null,
     onRename: () -> Unit,
     onHide: () -> Unit,
     onUnhide: () -> Unit,
@@ -749,10 +757,15 @@ private fun SelectionTopBar(
                 IconButton(onClick = onRestore) {
                     Icon(Icons.AutoMirrored.Rounded.Undo, contentDescription = stringResource(R.string.restore))
                 }
+                // Into a folder picked now, not where the files were.
+                IconButton(onClick = onRestoreTo) {
+                    Icon(Icons.AutoMirrored.Outlined.DriveFileMove, contentDescription = stringResource(R.string.restore_to))
+                }
             } else {
                 val barActions = activeBarActions.filter { action ->
                     when (action) {
                         SelectionAction.EDIT -> onEdit != null
+                        SelectionAction.QUICK_EDIT -> onQuickEdit != null
                         SelectionAction.SET_AS -> count == 1 && !hasSelectedFolders
                         SelectionAction.CONTENT_ORDER -> !hasSelectedFolders
                         SelectionAction.RENAME -> !hasSelectedFolders || count == 1
@@ -763,6 +776,7 @@ private fun SelectionTopBar(
                 val menuActions = activeMenuActions.filter { action ->
                     when (action) {
                         SelectionAction.EDIT -> onEdit != null
+                        SelectionAction.QUICK_EDIT -> onQuickEdit != null
                         SelectionAction.SET_AS -> count == 1 && !hasSelectedFolders
                         SelectionAction.CONTENT_ORDER -> !hasSelectedFolders
                         SelectionAction.RENAME -> !hasSelectedFolders || count == 1
@@ -797,6 +811,11 @@ private fun SelectionTopBar(
                                     if (isVideo) Icons.Rounded.MovieFilter else Icons.Rounded.AutoFixHigh,
                                     contentDescription = stringResource(editLabelRes ?: R.string.edit_photo),
                                 )
+                            }
+                        }
+                        SelectionAction.QUICK_EDIT -> if (onQuickEdit != null) {
+                            IconButton(onClick = onQuickEdit) {
+                                Icon(Icons.Rounded.Bolt, contentDescription = stringResource(R.string.quick_edit))
                             }
                         }
                         SelectionAction.COPY -> IconButton(onClick = onCopy) {
@@ -880,6 +899,13 @@ private fun SelectionTopBar(
                                         contentDescription = null,
                                     )
                                 },
+                            )
+                        }
+                        SelectionAction.QUICK_EDIT -> if (onQuickEdit != null) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.quick_edit)) },
+                                onClick = { menu = false; onQuickEdit() },
+                                leadingIcon = { Icon(Icons.Rounded.Bolt, contentDescription = null) },
                             )
                         }
                         SelectionAction.COPY -> DropdownMenuItem(

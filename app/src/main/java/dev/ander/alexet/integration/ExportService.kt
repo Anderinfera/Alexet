@@ -3,6 +3,7 @@ package dev.ander.alexet.integration
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -31,6 +32,11 @@ class ExportService : Service() {
         lastStartId = startId
         if (intent?.action == ACTION_STOP) {
             finish()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_CANCEL) {
+            // The notification's "Cancel": the export stops, and with it this service.
+            cancelHandler?.invoke()
             return START_NOT_STICKY
         }
         // Every startForegroundService needs its startForeground, also when already running.
@@ -76,15 +82,29 @@ class ExportService : Service() {
         private const val NOTIFICATION_ID = 4201
         private const val ACTION_START = "dev.ander.alexet.action.EXPORT_START"
         private const val ACTION_STOP = "dev.ander.alexet.action.EXPORT_STOP"
+        private const val ACTION_CANCEL = "dev.ander.alexet.action.EXPORT_CANCEL"
+        private const val RESULT_NOTIFICATION_ID = 4202
+
+        /** Opens the gallery at a folder (the finished quick edit's notification). */
+        const val ACTION_SHOW_FOLDER = "dev.ander.alexet.action.SHOW_FOLDER"
+        const val EXTRA_FOLDER_ID = "folder_id"
 
         @Volatile private var progress = 0
         @Volatile private var running = false
+        /** The notification's title (null: the export's usual one) and whether it offers "Cancel". */
+        @Volatile private var title: String? = null
+        @Volatile private var cancelable = false
+
+        /** Called (on the main thread) when "Cancel" is tapped in the notification. */
+        @Volatile var cancelHandler: (() -> Unit)? = null
         /** The service has made its startForeground (stopping it from outside is safe then). */
         @Volatile private var foreground = false
 
-        fun start(context: Context) {
+        fun start(context: Context, title: String? = null, cancelable: Boolean = false) {
             progress = 0
             running = true
+            this.title = title
+            this.cancelable = cancelable
             val intent = Intent(context, ExportService::class.java).setAction(ACTION_START)
             runCatching { ContextCompat.startForegroundService(context, intent) }
                 .onFailure { AppLog.e(TAG, "Could not start the service", it) }
@@ -112,6 +132,11 @@ class ExportService : Service() {
         }
 
         private fun notification(context: Context, percent: Int): Notification {
+            channel(context)
+            return progressNotification(context, percent)
+        }
+
+        private fun channel(context: Context) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 if (nm != null && nm.getNotificationChannel(CHANNEL_ID) == null) {
@@ -123,9 +148,12 @@ class ExportService : Service() {
                     )
                 }
             }
+        }
+
+        private fun progressNotification(context: Context, percent: Int): Notification {
             return NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(R.mipmap.ic_launcher)
-                .setContentTitle(context.getString(R.string.export_running_title))
+                .setContentTitle(title ?: context.getString(R.string.export_running_title))
                 .setContentText("$percent%")
                 .setProgress(100, percent.coerceIn(0, 100), false)
                 .setOngoing(true)
@@ -133,7 +161,54 @@ class ExportService : Service() {
                 .setSilent(true)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+                .apply {
+                    openApp(context)?.let(::setContentIntent)
+                    if (cancelable) {
+                        val cancel = PendingIntent.getService(
+                            context,
+                            1,
+                            Intent(context, ExportService::class.java).setAction(ACTION_CANCEL),
+                            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                        )
+                        addAction(0, context.getString(R.string.cancel), cancel)
+                    }
+                }
                 .build()
+        }
+
+        /**
+         * The outcome once the work is over ("Quick edit finished"): a tap opens the gallery at
+         * [folderId] (null: just the app).
+         */
+        fun notifyResult(context: Context, title: String, text: String, folderId: Long?) {
+            channel(context)
+            val open = if (folderId != null) {
+                PendingIntent.getActivity(
+                    context,
+                    2,
+                    Intent(context, dev.ander.alexet.MainActivity::class.java)
+                        .setAction(ACTION_SHOW_FOLDER)
+                        .putExtra(EXTRA_FOLDER_ID, folderId)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                )
+            } else {
+                openApp(context)
+            }
+            val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .apply { open?.let(::setContentIntent) }
+                .build()
+            FolderDeleteNotifications.notify(context, RESULT_NOTIFICATION_ID, notification)
+        }
+
+        private fun openApp(context: Context): PendingIntent? {
+            val launch = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: return null
+            return PendingIntent.getActivity(context, 3, launch, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         }
     }
 }

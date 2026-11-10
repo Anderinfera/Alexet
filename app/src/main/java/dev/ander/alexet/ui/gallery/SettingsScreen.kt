@@ -1,6 +1,8 @@
 package dev.ander.alexet.ui.gallery
 
 import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.Headphones
+import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.BlurOn
 import androidx.compose.material.icons.rounded.Checklist
 import androidx.compose.material.icons.rounded.Pause
@@ -16,6 +18,7 @@ import dev.ander.alexet.ui.components.aiglow.rememberTimedGlow
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.UploadFile
 import androidx.compose.material.icons.rounded.ImageSearch
+import androidx.compose.material.icons.rounded.SelectAll
 import androidx.compose.material.icons.rounded.DeleteForever
 import androidx.compose.material.icons.rounded.Gavel
 import androidx.compose.material3.CircularProgressIndicator
@@ -109,6 +112,7 @@ import androidx.compose.material.icons.rounded.Animation
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.AutoFixHigh
+import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Dashboard
@@ -136,6 +140,7 @@ import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.TouchApp
 import androidx.compose.material.icons.rounded.PhoneAndroid
+import androidx.compose.material.icons.rounded.VerticalSplit
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.PhotoSizeSelectLarge
 import androidx.compose.material.icons.rounded.Speed
@@ -248,25 +253,30 @@ enum class SettingsCategory(
         subtitleRes = R.string.settings_category_folders_sub,
         icon = Icons.Rounded.Folder,
     ),
+    SELECTION(
+        titleRes = R.string.settings_category_selection,
+        subtitleRes = R.string.settings_category_selection_sub,
+        icon = Icons.Rounded.SelectAll,
+    ),
+    VIEWING(
+        titleRes = R.string.settings_category_player,
+        subtitleRes = R.string.settings_category_player_sub,
+        icon = Icons.Rounded.PlayCircle,
+    ),
+    SEARCH(
+        titleRes = R.string.settings_category_extra,
+        subtitleRes = R.string.settings_category_extra_sub,
+        icon = Icons.Rounded.ImageSearch,
+    ),
     PRIVACY(
         titleRes = R.string.settings_category_privacy,
         subtitleRes = R.string.settings_category_privacy_sub,
         icon = Icons.Rounded.Security,
     ),
-    PLAYER(
-        titleRes = R.string.settings_category_player,
-        subtitleRes = R.string.settings_category_player_sub,
-        icon = Icons.Rounded.PlayCircle,
-    ),
-    EXTRA(
-        titleRes = R.string.settings_category_extra,
-        subtitleRes = R.string.settings_category_extra_sub,
-        icon = Icons.Rounded.Tune,
-    ),
-    SYSTEM(
+    APP(
         titleRes = R.string.settings_category_system,
         subtitleRes = R.string.settings_category_system_sub,
-        icon = Icons.Rounded.SaveAlt,
+        icon = Icons.Rounded.Tune,
     ),
 }
 
@@ -327,6 +337,7 @@ fun SettingsScreen(
     onHighResThumbnails: (Boolean) -> Unit = {},
     onLightMode: (Boolean) -> Unit = {},
     onAutoFoldSplitEnabled: (Boolean) -> Unit = {},
+    onDynamicSplit: (Boolean) -> Unit = {},
     onFoldSplitAngleThreshold: (Float) -> Unit = {},
     onShowFoldableSettings: (Boolean) -> Unit = {},
     smartSearch: SmartSearchSettingsUi? = null,
@@ -340,6 +351,8 @@ fun SettingsScreen(
     var showViewHelp by rememberSaveable { mutableStateOf(false) }
     var showSelectHelp by rememberSaveable { mutableStateOf(false) }
     var showBehaviorHelp by rememberSaveable { mutableStateOf(false) }
+    var showSelectionHelp by rememberSaveable { mutableStateOf(false) }
+    var showSearchHelp by rememberSaveable { mutableStateOf(false) }
     var showActionCardsHelp by rememberSaveable { mutableStateOf(false) }
     var showPrivacyHelp by rememberSaveable { mutableStateOf(false) }
     var showPrivatizedFoldersDialog by rememberSaveable { mutableStateOf(false) }
@@ -415,6 +428,7 @@ fun SettingsScreen(
                 onHighResThumbnails = onHighResThumbnails,
                 onLightMode = onLightMode,
                 onAutoFoldSplitEnabled = onAutoFoldSplitEnabled,
+                onDynamicSplit = onDynamicSplit,
                 onFoldSplitAngleThreshold = onFoldSplitAngleThreshold,
                 onShowFoldableSettings = onShowFoldableSettings,
                 smartSearch = smartSearch,
@@ -434,6 +448,8 @@ fun SettingsScreen(
                 onShowSelectHelp = { showSelectHelp = true },
                 onShowActionCardsHelp = { showActionCardsHelp = true },
                 onShowMaintenanceHelp = { showMaintenanceHelp = true },
+                onShowSelectionHelp = { showSelectionHelp = true },
+                onShowSearchHelp = { showSearchHelp = true },
                 onDraggingChanged = { isDraggingActionCard = it },
             )
         } else {
@@ -488,6 +504,7 @@ fun SettingsScreen(
                 onHighResThumbnails = onHighResThumbnails,
                 onLightMode = onLightMode,
                 onAutoFoldSplitEnabled = onAutoFoldSplitEnabled,
+                onDynamicSplit = onDynamicSplit,
                 onFoldSplitAngleThreshold = onFoldSplitAngleThreshold,
                 onShowFoldableSettings = onShowFoldableSettings,
                 smartSearch = smartSearch,
@@ -507,6 +524,8 @@ fun SettingsScreen(
                 onShowSelectHelp = { showSelectHelp = true },
                 onShowActionCardsHelp = { showActionCardsHelp = true },
                 onShowMaintenanceHelp = { showMaintenanceHelp = true },
+                onShowSelectionHelp = { showSelectionHelp = true },
+                onShowSearchHelp = { showSearchHelp = true },
                 onDraggingChanged = { isDraggingActionCard = it },
             )
         }
@@ -531,6 +550,14 @@ fun SettingsScreen(
 
     if (showBehaviorHelp) {
         BehaviorHelpDialog(onDismiss = { showBehaviorHelp = false })
+    }
+
+    if (showSelectionHelp) {
+        SelectionHelpDialog(onDismiss = { showSelectionHelp = false })
+    }
+
+    if (showSearchHelp) {
+        SearchHelpDialog(onDismiss = { showSearchHelp = false })
     }
 
     if (showActionCardsHelp) {
@@ -632,6 +659,7 @@ private fun MasterDetailSettingsLayout(
     onHighResThumbnails: (Boolean) -> Unit,
     onLightMode: (Boolean) -> Unit,
     onAutoFoldSplitEnabled: (Boolean) -> Unit,
+    onDynamicSplit: (Boolean) -> Unit,
     onFoldSplitAngleThreshold: (Float) -> Unit,
     onShowFoldableSettings: (Boolean) -> Unit,
     smartSearch: SmartSearchSettingsUi?,
@@ -651,6 +679,8 @@ private fun MasterDetailSettingsLayout(
     onShowSelectHelp: () -> Unit,
     onShowActionCardsHelp: () -> Unit,
     onShowMaintenanceHelp: () -> Unit,
+    onShowSelectionHelp: () -> Unit,
+    onShowSearchHelp: () -> Unit,
     onDraggingChanged: (Boolean) -> Unit,
 ) {
     val masterScrollState = listScrollState
@@ -745,10 +775,11 @@ private fun MasterDetailSettingsLayout(
                                 when (cat) {
                                     SettingsCategory.VIEW -> onShowViewHelp()
                                     SettingsCategory.FOLDERS -> Unit
+                                    SettingsCategory.SELECTION -> onShowSelectionHelp()
+                                    SettingsCategory.VIEWING -> onShowBehaviorHelp()
+                                    SettingsCategory.SEARCH -> onShowSearchHelp()
                                     SettingsCategory.PRIVACY -> onShowPrivacyHelp()
-                                    SettingsCategory.PLAYER -> onShowBehaviorHelp()
-                                    SettingsCategory.SYSTEM -> onShowMaintenanceHelp()
-                                    SettingsCategory.EXTRA -> Unit
+                                    SettingsCategory.APP -> onShowMaintenanceHelp()
                                 }
                             },
                             modifier = Modifier.size(36.dp),
@@ -790,99 +821,94 @@ private fun MasterDetailSettingsLayout(
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     when (cat) {
-                        SettingsCategory.VIEW -> {
-                            ViewSettingsSectionContent(
-                                settings = settings,
-                                foldable = foldable,
-                                showHeader = false,
-                                onContentViewMode = onContentViewMode,
-                                onExpandGrid = onExpandGrid,
-                                onFoldableFileColumns = onFoldableFileColumns,
-                                onPanelSplitPercent = onPanelSplitPercent,
-                                onAutoFoldSplitEnabled = onAutoFoldSplitEnabled,
-                                onFoldSplitAngleThreshold = onFoldSplitAngleThreshold,
-                                onShowFileNames = onShowFileNames,
-                                onGridColumns = onGridColumns,
-                                onFileColumns = onFileColumns,
-                                onShowAllFiles = onShowAllFiles,
-                                onShowOtherFileFolders = onShowOtherFileFolders,
-                                onVideoDurationFormat = onVideoDurationFormat,
-                                onScrollerEnabled = onScrollerEnabled,
-                                onScrollerOnRight = onScrollerOnRight,
-                                onScrollerSmooth = onScrollerSmooth,
-                                onHighResThumbnails = onHighResThumbnails,
-                                onLightMode = onLightMode,
-                                onShowViewHelp = onShowViewHelp,
-                                onShowPaneSplitHelp = onShowPaneSplitHelp,
-                                onShowWallpaperResolutionsDialog = onShowWallpaperResolutionsDialog,
-                            )
-                        }
-                        SettingsCategory.FOLDERS -> {
-                            FoldersSettingsSectionContent(
-                                settings = settings,
-                                showHeader = false,
-                                onMultiFolderMemory = onMultiFolderMemory,
-                                onRememberFolderScrollAcrossSessions = onRememberFolderScrollAcrossSessions,
-                                onNewContentScrollsToTop = onNewContentScrollsToTop,
-                                onShowHidden = onShowHidden,
-                                onHideFavoritesFolder = onHideFavoritesFolder,
-                                onShowFolderHelp = onShowFolderHelp,
-                                albums = allAlbums,
-                                onUpdateHiddenCover = onUpdateHiddenCover,
-                                onPickHiddenCoverImage = onPickHiddenCoverImage,
-                            )
-                        }
-                        SettingsCategory.PRIVACY -> {
-                            PrivacySettingsSectionContent(
-                                settings = settings,
-                                showHeader = false,
-                                onRandomizeFileNamesInPrivateFolders = onRandomizeFileNamesInPrivateFolders,
-                                onStripExifInPrivateFolders = onStripExifInPrivateFolders,
-                                onStripExifOnShare = onStripExifOnShare,
-                                onShowPrivatizedFoldersDialog = onShowPrivatizedFoldersDialog,
-                                onShowPrivacyHelp = onShowPrivacyHelp,
-                            )
-                        }
-                        SettingsCategory.PLAYER -> {
-                            PlayerSettingsSectionContent(
-                                settings = settings,
-                                albums = albums,
-                                allAlbums = allAlbums,
-                                showHeader = false,
-                                onNewpipeFolder = onNewpipeFolder,
-                                onVideoDoubleClickToGallery = onVideoDoubleClickToGallery,
-                                onUpdatePlayerConfig = onUpdatePlayerConfig,
-                                onAutoplayGifs = onAutoplayGifs,
-                                onShowNavArrows = onShowNavArrows,
-                                onSearchFilesFullScreen = onSearchFilesFullScreen,
-                                onFileSelectMode = onFileSelectMode,
-                                onOperationsFollowSelectionOrder = onOperationsFollowSelectionOrder,
-                                onSaveSelectionActionsConfig = onSaveSelectionActionsConfig,
-                                onToggleSelectionActionVisibility = onToggleSelectionActionVisibility,
-                                onShowNewpipeFolderDialog = onShowNewpipeFolderDialog,
-                                onShowBehaviorHelp = onShowBehaviorHelp,
-                                onShowSelectHelp = onShowSelectHelp,
-                                onShowActionCardsHelp = onShowActionCardsHelp,
-                                onDraggingChanged = onDraggingChanged,
-                            )
-                        }
-                        SettingsCategory.EXTRA -> ExtraSettingsSectionContent(
+                        SettingsCategory.VIEW -> ViewSettingsSectionContent(
                             settings = settings,
+                            foldable = foldable,
+                            showHeader = false,
+                            onContentViewMode = onContentViewMode,
+                            onExpandGrid = onExpandGrid,
+                            onFoldableFileColumns = onFoldableFileColumns,
+                            onPanelSplitPercent = onPanelSplitPercent,
+                            onAutoFoldSplitEnabled = onAutoFoldSplitEnabled,
+                            onDynamicSplit = onDynamicSplit,
+                            onFoldSplitAngleThreshold = onFoldSplitAngleThreshold,
                             onShowFoldableSettings = onShowFoldableSettings,
+                            onShowFileNames = onShowFileNames,
+                            onGridColumns = onGridColumns,
+                            onFileColumns = onFileColumns,
+                            onVideoDurationFormat = onVideoDurationFormat,
+                            onScrollerEnabled = onScrollerEnabled,
+                            onScrollerOnRight = onScrollerOnRight,
+                            onScrollerSmooth = onScrollerSmooth,
+                            onShowViewHelp = onShowViewHelp,
+                            onShowPaneSplitHelp = onShowPaneSplitHelp,
+                        )
+                        SettingsCategory.FOLDERS -> FoldersSettingsSectionContent(
+                            settings = settings,
+                            albums = albums,
+                            allAlbums = allAlbums,
+                            showHeader = false,
+                            onShowAllFiles = onShowAllFiles,
+                            onShowOtherFileFolders = onShowOtherFileFolders,
+                            onHideFavoritesFolder = onHideFavoritesFolder,
+                            onMultiFolderMemory = onMultiFolderMemory,
+                            onRememberFolderScrollAcrossSessions = onRememberFolderScrollAcrossSessions,
+                            onNewContentScrollsToTop = onNewContentScrollsToTop,
+                            onShowNewpipeFolderDialog = onShowNewpipeFolderDialog,
+                            onShowFolderHelp = onShowFolderHelp,
+                        )
+                        SettingsCategory.SELECTION -> SelectionSettingsSectionContent(
+                            settings = settings,
+                            onFileSelectMode = onFileSelectMode,
+                            onOperationsFollowSelectionOrder = onOperationsFollowSelectionOrder,
+                            onSaveSelectionActionsConfig = onSaveSelectionActionsConfig,
+                            onToggleSelectionActionVisibility = onToggleSelectionActionVisibility,
+                            onShowSelectHelp = onShowSelectHelp,
+                            onShowActionCardsHelp = onShowActionCardsHelp,
+                            onDraggingChanged = onDraggingChanged,
+                        )
+                        SettingsCategory.VIEWING -> PlayerSettingsSectionContent(
+                            settings = settings,
+                            showHeader = false,
+                            onVideoDoubleClickToGallery = onVideoDoubleClickToGallery,
+                            onUpdatePlayerConfig = onUpdatePlayerConfig,
+                            onAutoplayGifs = onAutoplayGifs,
+                            onShowNavArrows = onShowNavArrows,
+                            onShowBehaviorHelp = onShowBehaviorHelp,
+                        )
+                        SettingsCategory.SEARCH -> SearchSettingsSectionContent(
+                            settings = settings,
+                            onSearchFilesFullScreen = onSearchFilesFullScreen,
                             smartSearch = smartSearch,
                         )
-                        SettingsCategory.SYSTEM -> {
-                            SystemSettingsSectionContent(
-                                debugLogging = settings.debugLogging,
-                                showHeader = false,
-                                onExportConfig = onExportConfig,
-                                onDebugLoggingChange = onDebugLoggingChange,
-                                onClearDebugLog = onClearDebugLog,
-                                onImportConfig = onImportConfig,
-                                onResetThumbnails = onResetThumbnails,
-                                onShowMaintenanceHelp = onShowMaintenanceHelp,
-                            )
-                        }
+                        SettingsCategory.PRIVACY -> PrivacySettingsSectionContent(
+                            settings = settings,
+                            albums = allAlbums,
+                            showHeader = false,
+                            onShowHidden = onShowHidden,
+                            onShowFolderHelp = onShowFolderHelp,
+                            onUpdateHiddenCover = onUpdateHiddenCover,
+                            onPickHiddenCoverImage = onPickHiddenCoverImage,
+                            onRandomizeFileNamesInPrivateFolders = onRandomizeFileNamesInPrivateFolders,
+                            onStripExifInPrivateFolders = onStripExifInPrivateFolders,
+                            onStripExifOnShare = onStripExifOnShare,
+                            onShowPrivatizedFoldersDialog = onShowPrivatizedFoldersDialog,
+                            onShowPrivacyHelp = onShowPrivacyHelp,
+                        )
+                        SettingsCategory.APP -> SystemSettingsSectionContent(
+                            settings = settings,
+                            debugLogging = settings.debugLogging,
+                            showHeader = false,
+                            onLightMode = onLightMode,
+                            onHighResThumbnails = onHighResThumbnails,
+                            onShowWallpaperResolutionsDialog = onShowWallpaperResolutionsDialog,
+                            onExportConfig = onExportConfig,
+                            onDebugLoggingChange = onDebugLoggingChange,
+                            onClearDebugLog = onClearDebugLog,
+                            onImportConfig = onImportConfig,
+                            onResetThumbnails = onResetThumbnails,
+                            onShowMaintenanceHelp = onShowMaintenanceHelp,
+                        )
                     }
                 }
             }
@@ -1260,6 +1286,7 @@ private fun PhoneSettingsLayout(
     onHighResThumbnails: (Boolean) -> Unit,
     onLightMode: (Boolean) -> Unit,
     onAutoFoldSplitEnabled: (Boolean) -> Unit,
+    onDynamicSplit: (Boolean) -> Unit,
     onFoldSplitAngleThreshold: (Float) -> Unit,
     onShowFoldableSettings: (Boolean) -> Unit,
     smartSearch: SmartSearchSettingsUi?,
@@ -1279,6 +1306,8 @@ private fun PhoneSettingsLayout(
     onShowSelectHelp: () -> Unit,
     onShowActionCardsHelp: () -> Unit,
     onShowMaintenanceHelp: () -> Unit,
+    onShowSelectionHelp: () -> Unit,
+    onShowSearchHelp: () -> Unit,
     onDraggingChanged: (Boolean) -> Unit,
 ) {
     // scrollStates: one scroll position per category, kept while going back to the list.
@@ -1387,10 +1416,11 @@ private fun PhoneSettingsLayout(
                                             when (open) {
                                                 SettingsCategory.VIEW -> onShowViewHelp()
                                                 SettingsCategory.FOLDERS -> Unit
+                                                SettingsCategory.SELECTION -> onShowSelectionHelp()
+                                                SettingsCategory.VIEWING -> onShowBehaviorHelp()
+                                                SettingsCategory.SEARCH -> onShowSearchHelp()
                                                 SettingsCategory.PRIVACY -> onShowPrivacyHelp()
-                                                SettingsCategory.PLAYER -> onShowBehaviorHelp()
-                                                SettingsCategory.SYSTEM -> onShowMaintenanceHelp()
-                                                SettingsCategory.EXTRA -> Unit
+                                                SettingsCategory.APP -> onShowMaintenanceHelp()
                                             }
                                         },
                                     ) {
@@ -1427,82 +1457,85 @@ private fun PhoneSettingsLayout(
                                     onFoldableFileColumns = onFoldableFileColumns,
                                     onPanelSplitPercent = onPanelSplitPercent,
                                     onAutoFoldSplitEnabled = onAutoFoldSplitEnabled,
+                                    onDynamicSplit = onDynamicSplit,
                                     onFoldSplitAngleThreshold = onFoldSplitAngleThreshold,
+                                    onShowFoldableSettings = onShowFoldableSettings,
                                     onShowFileNames = onShowFileNames,
                                     onGridColumns = onGridColumns,
                                     onFileColumns = onFileColumns,
-                                    onShowAllFiles = onShowAllFiles,
-                                    onShowOtherFileFolders = onShowOtherFileFolders,
                                     onVideoDurationFormat = onVideoDurationFormat,
                                     onScrollerEnabled = onScrollerEnabled,
                                     onScrollerOnRight = onScrollerOnRight,
                                     onScrollerSmooth = onScrollerSmooth,
-                                    onHighResThumbnails = onHighResThumbnails,
-                                    onLightMode = onLightMode,
                                     onShowViewHelp = onShowViewHelp,
                                     onShowPaneSplitHelp = onShowPaneSplitHelp,
-                                    onShowWallpaperResolutionsDialog = onShowWallpaperResolutionsDialog,
                                 )
                                 SettingsCategory.FOLDERS -> FoldersSettingsSectionContent(
                                     settings = settings,
+                                    albums = albums,
+                                    allAlbums = allAlbums,
                                     showHeader = false,
+                                    onShowAllFiles = onShowAllFiles,
+                                    onShowOtherFileFolders = onShowOtherFileFolders,
+                                    onHideFavoritesFolder = onHideFavoritesFolder,
                                     onMultiFolderMemory = onMultiFolderMemory,
                                     onRememberFolderScrollAcrossSessions = onRememberFolderScrollAcrossSessions,
                                     onNewContentScrollsToTop = onNewContentScrollsToTop,
-                                    onShowHidden = onShowHidden,
-                                    onHideFavoritesFolder = onHideFavoritesFolder,
+                                    onShowNewpipeFolderDialog = onShowNewpipeFolderDialog,
                                     onShowFolderHelp = onShowFolderHelp,
-                                    albums = allAlbums,
-                                    onUpdateHiddenCover = onUpdateHiddenCover,
-                                    onPickHiddenCoverImage = onPickHiddenCoverImage,
+                                )
+                                SettingsCategory.SELECTION -> SelectionSettingsSectionContent(
+                                    settings = settings,
+                                    onFileSelectMode = onFileSelectMode,
+                                    onOperationsFollowSelectionOrder = onOperationsFollowSelectionOrder,
+                                    onSaveSelectionActionsConfig = onSaveSelectionActionsConfig,
+                                    onToggleSelectionActionVisibility = onToggleSelectionActionVisibility,
+                                    onShowSelectHelp = onShowSelectHelp,
+                                    onShowActionCardsHelp = onShowActionCardsHelp,
+                                    onDraggingChanged = onDraggingChanged,
+                                )
+                                SettingsCategory.VIEWING -> PlayerSettingsSectionContent(
+                                    settings = settings,
+                                    showHeader = false,
+                                    onVideoDoubleClickToGallery = onVideoDoubleClickToGallery,
+                                    onUpdatePlayerConfig = onUpdatePlayerConfig,
+                                    onAutoplayGifs = onAutoplayGifs,
+                                    onShowNavArrows = onShowNavArrows,
+                                    onShowBehaviorHelp = onShowBehaviorHelp,
+                                )
+                                SettingsCategory.SEARCH -> SearchSettingsSectionContent(
+                                    settings = settings,
+                                    onSearchFilesFullScreen = onSearchFilesFullScreen,
+                                    smartSearch = smartSearch,
                                 )
                                 SettingsCategory.PRIVACY -> PrivacySettingsSectionContent(
                                     settings = settings,
+                                    albums = allAlbums,
                                     showHeader = false,
+                                    onShowHidden = onShowHidden,
+                                    onShowFolderHelp = onShowFolderHelp,
+                                    onUpdateHiddenCover = onUpdateHiddenCover,
+                                    onPickHiddenCoverImage = onPickHiddenCoverImage,
                                     onRandomizeFileNamesInPrivateFolders = onRandomizeFileNamesInPrivateFolders,
                                     onStripExifInPrivateFolders = onStripExifInPrivateFolders,
                                     onStripExifOnShare = onStripExifOnShare,
                                     onShowPrivatizedFoldersDialog = onShowPrivatizedFoldersDialog,
                                     onShowPrivacyHelp = onShowPrivacyHelp,
                                 )
-                                SettingsCategory.PLAYER -> PlayerSettingsSectionContent(
+                                SettingsCategory.APP -> SystemSettingsSectionContent(
                                     settings = settings,
-                                    albums = albums,
-                                    allAlbums = allAlbums,
+                                    debugLogging = settings.debugLogging,
                                     showHeader = false,
-                                    onNewpipeFolder = onNewpipeFolder,
-                                    onVideoDoubleClickToGallery = onVideoDoubleClickToGallery,
-                                    onUpdatePlayerConfig = onUpdatePlayerConfig,
-                                    onAutoplayGifs = onAutoplayGifs,
-                                    onShowNavArrows = onShowNavArrows,
-                                    onSearchFilesFullScreen = onSearchFilesFullScreen,
-                                    onFileSelectMode = onFileSelectMode,
-                                    onOperationsFollowSelectionOrder = onOperationsFollowSelectionOrder,
-                                    onSaveSelectionActionsConfig = onSaveSelectionActionsConfig,
-                                    onToggleSelectionActionVisibility = onToggleSelectionActionVisibility,
-                                    onShowNewpipeFolderDialog = onShowNewpipeFolderDialog,
-                                    onShowBehaviorHelp = onShowBehaviorHelp,
-                                    onShowSelectHelp = onShowSelectHelp,
-                                    onShowActionCardsHelp = onShowActionCardsHelp,
-                                    onDraggingChanged = onDraggingChanged,
+                                    onLightMode = onLightMode,
+                                    onHighResThumbnails = onHighResThumbnails,
+                                    onShowWallpaperResolutionsDialog = onShowWallpaperResolutionsDialog,
+                                    onExportConfig = onExportConfig,
+                                    onDebugLoggingChange = onDebugLoggingChange,
+                                    onClearDebugLog = onClearDebugLog,
+                                    onImportConfig = onImportConfig,
+                                    onResetThumbnails = onResetThumbnails,
+                                    onShowMaintenanceHelp = onShowMaintenanceHelp,
                                 )
-                                SettingsCategory.EXTRA -> ExtraSettingsSectionContent(
-                                    settings = settings,
-                                    onShowFoldableSettings = onShowFoldableSettings,
-                                    smartSearch = smartSearch,
-                                )
-                                SettingsCategory.SYSTEM -> {
-                                    SystemSettingsSectionContent(
-                                        debugLogging = settings.debugLogging,
-                                        showHeader = false,
-                                        onExportConfig = onExportConfig,
-                                        onDebugLoggingChange = onDebugLoggingChange,
-                                        onClearDebugLog = onClearDebugLog,
-                                        onImportConfig = onImportConfig,
-                                        onResetThumbnails = onResetThumbnails,
-                                        onShowMaintenanceHelp = onShowMaintenanceHelp,
-                                    )
-                                }
                             }
                         }
                     }
@@ -1515,6 +1548,18 @@ private fun PhoneSettingsLayout(
 // === MODULARNE SEKCJE USTAWIEŃ (Modular Settings Sections)
 // =============================================================================
 
+/** Options of the View card's tablet tab (the two panes) and of its phone tab. */
+private val TabletViewOptionKeys = setOf(
+    R.string.content_view_title,
+    R.string.expand_grid_size,
+    R.string.settings_file_columns_label,
+    R.string.pane_split_title,
+    R.string.dynamic_split_title,
+    R.string.auto_fold_split_title,
+    R.string.fold_split_angle_title,
+)
+private val PhoneViewOptionKeys = setOf(R.string.file_columns_title)
+
 @Composable
 private fun ViewSettingsSectionContent(
     settings: AppSettings,
@@ -1525,21 +1570,18 @@ private fun ViewSettingsSectionContent(
     onFoldableFileColumns: (Int) -> Unit,
     onPanelSplitPercent: (Int) -> Unit,
     onAutoFoldSplitEnabled: (Boolean) -> Unit,
+    onDynamicSplit: (Boolean) -> Unit,
     onFoldSplitAngleThreshold: (Float) -> Unit,
+    onShowFoldableSettings: (Boolean) -> Unit,
     onShowFileNames: (Boolean) -> Unit,
     onGridColumns: (Int) -> Unit,
     onFileColumns: (Int) -> Unit,
-    onShowAllFiles: (Boolean) -> Unit,
-    onShowOtherFileFolders: (Boolean) -> Unit,
     onVideoDurationFormat: (VideoDurationFormat) -> Unit,
     onScrollerEnabled: (Boolean) -> Unit,
     onScrollerOnRight: (Boolean) -> Unit,
     onScrollerSmooth: (Boolean) -> Unit,
-    onHighResThumbnails: (Boolean) -> Unit,
-    onLightMode: (Boolean) -> Unit,
     onShowViewHelp: () -> Unit,
     onShowPaneSplitHelp: () -> Unit,
-    onShowWallpaperResolutionsDialog: () -> Unit,
 ) {
     if (showHeader) {
         SettingsSectionHeader(
@@ -1550,9 +1592,21 @@ private fun ViewSettingsSectionContent(
         )
     }
     SettingsCardContainer {
-        // Pictures of the section: this device by default, the other one at a tap.
+        // Phone and tablet tabs (this device first), each with its own options and the shared ones.
+        // Without the two-panel options (no foldable, switch below off) there is only the phone.
         val wideNow = !foldable.isTabletop && (foldable.showListDetail || LocalConfiguration.current.screenWidthDp >= 600)
-        var previewDevice by rememberSaveable { mutableStateOf(if (wideNow) PreviewDevice.TABLET else PreviewDevice.PHONE) }
+        var chosenDevice by rememberSaveable { mutableStateOf(if (wideNow) PreviewDevice.TABLET else PreviewDevice.PHONE) }
+        val previewDevice = if (settings.extraViewSettingsShown) chosenDevice else PreviewDevice.PHONE
+        // A search result in the other tab opens that tab.
+        val jumpKey = LocalSettingsJump.current?.target?.key
+        LaunchedEffect(jumpKey) {
+            if (jumpKey == null) return@LaunchedEffect
+            if (jumpKey in TabletViewOptionKeys) {
+                chosenDevice = PreviewDevice.TABLET
+            } else if (jumpKey in PhoneViewOptionKeys) {
+                chosenDevice = PreviewDevice.PHONE
+            }
+        }
         // Files' columns as that device shows them.
         val previewFileColumns = if (previewDevice == PreviewDevice.TABLET) settings.foldableFileColumns else settings.fileColumns
         val modePhonePreview: @Composable (ContentViewMode) -> Unit = { mode ->
@@ -1568,24 +1622,42 @@ private fun ViewSettingsSectionContent(
                 )
             }
         }
-        Text(
-            text = stringResource(R.string.view_preview_device),
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
-        )
-        SettingsSegmentedRow(
-            options = listOf(
-                PreviewDevice.PHONE to stringResource(R.string.view_preview_phone),
-                PreviewDevice.TABLET to stringResource(R.string.view_preview_tablet),
+        SettingsSwitchRow(
+            title = stringResource(R.string.show_foldable_settings_title),
+            modifier = Modifier.settingsSearchTarget(R.string.show_foldable_settings_title),
+            body = stringResource(
+                if (settings.foldableDetected) R.string.show_foldable_settings_detected
+                else R.string.show_foldable_settings_body,
             ),
-            selected = previewDevice,
-            onSelect = { previewDevice = it },
-            modifier = Modifier.padding(bottom = 8.dp),
+            // On a foldable they are always shown: the switch stays on.
+            checked = settings.extraViewSettingsShown,
+            enabled = !settings.foldableDetected,
+            onCheckedChange = onShowFoldableSettings,
+            icon = Icons.Rounded.Devices,
+            preview = { OptionPreview(OptionPreviewKind.EXTRA_VIEW, active = settings.extraViewSettingsShown) },
         )
-        // Two-panel options: on a foldable or with the switch in "Extra".
+        SettingsItemDivider(startIndent = 0.dp)
         if (settings.extraViewSettingsShown) {
+            Text(
+                text = stringResource(R.string.view_preview_device),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 4.dp, top = 4.dp, bottom = 4.dp),
+            )
+            SettingsSegmentedRow(
+                options = listOf(
+                    PreviewDevice.PHONE to stringResource(R.string.view_preview_phone),
+                    PreviewDevice.TABLET to stringResource(R.string.view_preview_tablet),
+                ),
+                selected = chosenDevice,
+                onSelect = { chosenDevice = it },
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+            SettingsItemDivider(startIndent = 0.dp)
+        }
+        // Two-panel options: the tablet tab.
+        if (previewDevice == PreviewDevice.TABLET) {
             Column(modifier = Modifier.settingsSearchTarget(R.string.content_view_title)) {
                 Row(
                     modifier = Modifier
@@ -2003,6 +2075,17 @@ private fun ViewSettingsSectionContent(
                         }
                     }
 
+                    // 50/50 until a folder opens on the right; an animation, so light mode turns it off.
+                    SettingsSwitchRow(
+                        title = stringResource(R.string.dynamic_split_title),
+                        modifier = Modifier.settingsSearchTarget(R.string.dynamic_split_title),
+                        body = stringResource(R.string.dynamic_split_body),
+                        checked = settings.dynamicSplit && !settings.lightMode,
+                        onCheckedChange = onDynamicSplit,
+                        icon = Icons.Rounded.VerticalSplit,
+                        preview = { OptionPreview(OptionPreviewKind.DYNAMIC_SPLIT, active = settings.dynamicSplit && !settings.lightMode) },
+                    )
+
                     // Fold options: only on a foldable (they never apply elsewhere).
                     if (settings.foldOnlySettingsShown) {
                         // R13 controls:
@@ -2013,6 +2096,7 @@ private fun ViewSettingsSectionContent(
                             checked = settings.autoFoldSplitEnabled,
                             onCheckedChange = onAutoFoldSplitEnabled,
                             icon = Icons.Rounded.PhoneAndroid,
+                            preview = { OptionPreview(OptionPreviewKind.FOLD_SPLIT, active = settings.autoFoldSplitEnabled) },
                         )
                         AnimatedVisibility(visible = settings.autoFoldSplitEnabled) {
                             Row(
@@ -2064,6 +2148,8 @@ private fun ViewSettingsSectionContent(
                     fileColumns = previewFileColumns,
                     focus = PreviewFocus.FILES,
                     showNames = settings.showFileNames,
+                    infoTitle = R.string.show_file_names,
+                    infoBody = R.string.preview_info_show_file_names,
                 )
             },
         )
@@ -2086,6 +2172,8 @@ private fun ViewSettingsSectionContent(
                     fileColumns = previewFileColumns,
                     focus = PreviewFocus.FOLDERS,
                     showNames = settings.showFileNames,
+                    infoTitle = R.string.grid_columns,
+                    infoBody = R.string.preview_info_grid_columns,
                 )
                 Column {
                     Text(
@@ -2107,64 +2195,52 @@ private fun ViewSettingsSectionContent(
             )
         }
         SettingsItemDivider()
-        Row(
-            modifier = Modifier.settingsSearchTarget(R.string.file_columns_title)
-                .fillMaxWidth()
-                .padding(vertical = 6.dp, horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
+        // The phone tab only: a tablet uses the file pane's columns.
+        if (previewDevice == PreviewDevice.PHONE) {
             Row(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.settingsSearchTarget(R.string.file_columns_title)
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp, horizontal = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                // On a tablet the foldable count is used: this one stands dimmed there.
-                MiniLayoutPreview(
-                    device = previewDevice,
-                    folderColumns = settings.gridColumns,
-                    fileColumns = if (previewDevice == PreviewDevice.TABLET) settings.foldableFileColumns else settings.fileColumns,
-                    focus = PreviewFocus.FILES,
-                    showNames = settings.showFileNames,
-                    dimFocus = previewDevice == PreviewDevice.TABLET,
-                )
-                Column {
-                    Text(
-                        text = stringResource(R.string.file_columns_title),
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.Medium,
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    // On a tablet the foldable count is used: this one stands dimmed there.
+                    MiniLayoutPreview(
+                        device = previewDevice,
+                        folderColumns = settings.gridColumns,
+                        fileColumns = if (previewDevice == PreviewDevice.TABLET) settings.foldableFileColumns else settings.fileColumns,
+                        focus = PreviewFocus.FILES,
+                        showNames = settings.showFileNames,
+                        infoTitle = R.string.file_columns_title,
+                        infoBody = R.string.preview_info_file_columns,
+                        dimFocus = previewDevice == PreviewDevice.TABLET,
                     )
-                    Text(
-                        text = stringResource(R.string.file_columns_body),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Column {
+                        Text(
+                            text = stringResource(R.string.file_columns_title),
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Text(
+                            text = stringResource(R.string.file_columns_body),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
+                SettingsCompactStepper(
+                    value = settings.fileColumns,
+                    range = 1..30,
+                    onValueChange = onFileColumns,
+                )
             }
-            SettingsCompactStepper(
-                value = settings.fileColumns,
-                range = 1..30,
-                onValueChange = onFileColumns,
-            )
+            SettingsItemDivider()
         }
-        SettingsItemDivider()
-        SettingsSwitchRow(
-            title = stringResource(R.string.show_all_files_title),
-            modifier = Modifier.settingsSearchTarget(R.string.show_all_files_title),
-            body = stringResource(R.string.show_all_files_body),
-            checked = settings.showAllFiles,
-            onCheckedChange = onShowAllFiles,
-            icon = Icons.Rounded.InsertDriveFile,
-        )
-        SettingsSwitchRow(
-            title = stringResource(R.string.show_other_file_folders_title),
-            modifier = Modifier.settingsSearchTarget(R.string.show_other_file_folders_title),
-            body = stringResource(R.string.show_other_file_folders_body),
-            checked = settings.showOtherFileFolders,
-            onCheckedChange = onShowOtherFileFolders,
-            icon = Icons.Rounded.FolderOpen,
-        )
-        SettingsItemDivider()
         Column(
             modifier = Modifier.settingsSearchTarget(R.string.video_duration_format_title)
                 .fillMaxWidth()
@@ -2176,20 +2252,11 @@ private fun ViewSettingsSectionContent(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    modifier = Modifier.size(38.dp),
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Rounded.Schedule,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
-                }
+                OptionPreview(
+                    OptionPreviewKind.DURATION_FORMAT,
+                    active = true,
+                    fullDuration = settings.videoDurationFormat == VideoDurationFormat.HOURS_MINUTES_SECONDS,
+                )
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = stringResource(R.string.video_duration_format_title),
@@ -2216,27 +2283,6 @@ private fun ViewSettingsSectionContent(
         }
         SettingsItemDivider()
 
-        // Tryb lekki
-        SettingsSwitchRow(
-            title = stringResource(R.string.light_mode_title),
-            modifier = Modifier.settingsSearchTarget(R.string.light_mode_title),
-            body = stringResource(R.string.light_mode_body),
-            checked = settings.lightMode,
-            onCheckedChange = onLightMode,
-            icon = Icons.Rounded.Speed,
-        )
-        SettingsItemDivider()
-        // Miniatury
-        SettingsSwitchRow(
-            title = stringResource(R.string.thumbnails_high_res_title),
-            modifier = Modifier.settingsSearchTarget(R.string.thumbnails_high_res_title),
-            body = stringResource(R.string.thumbnails_high_res_body),
-            checked = settings.highResThumbnails,
-            onCheckedChange = onHighResThumbnails,
-            icon = Icons.Rounded.PhotoSizeSelectLarge,
-        )
-        SettingsItemDivider()
-
         // Przewijanie (Scroller):
         SettingsSwitchRow(
             title = stringResource(R.string.scroller_enabled_title),
@@ -2245,6 +2291,7 @@ private fun ViewSettingsSectionContent(
             checked = settings.scrollerEnabled,
             onCheckedChange = onScrollerEnabled,
             icon = Icons.Rounded.SwapVert,
+            preview = { OptionPreview(OptionPreviewKind.SCROLLER, active = settings.scrollerEnabled) },
         )
         AnimatedVisibility(
             visible = settings.scrollerEnabled,
@@ -2292,67 +2339,49 @@ private fun ViewSettingsSectionContent(
                         )
                     }
                 }
-                SettingsSwitchRow(
-                    title = stringResource(R.string.scroller_smooth_title),
-                    modifier = Modifier.settingsSearchTarget(R.string.scroller_smooth_title),
-                    body = stringResource(R.string.scroller_smooth_body),
-                    checked = settings.scrollerSmooth,
-                    onCheckedChange = onScrollerSmooth,
-                    icon = Icons.Rounded.SwapVert,
-                )
+                // How the grid follows the handle: smoothly or a whole row at a time.
+                Column(
+                    modifier = Modifier.settingsSearchTarget(R.string.scroller_smooth_title)
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp, horizontal = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        OptionPreview(
+                            if (settings.scrollerSmooth) OptionPreviewKind.SMOOTH_SCROLL else OptionPreviewKind.ROW_SCROLL,
+                            active = true,
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.scroller_smooth_title),
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                text = stringResource(R.string.scroller_smooth_body),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    SettingsSegmentedRow(
+                        options = listOf(
+                            true to stringResource(R.string.scroller_mode_smooth),
+                            false to stringResource(R.string.scroller_mode_rows),
+                        ),
+                        selected = settings.scrollerSmooth,
+                        onSelect = onScrollerSmooth,
+                    )
+                }
             }
         }
 
-        if (settings.foldOnlySettingsShown) {
-            SettingsItemDivider(startIndent = 0.dp)
-
-            // Rozdzielczości tapet
-            val wallpaperResSubtitle = if (settings.customWallpaperFoldedWidth > 0 || settings.customWallpaperUnfoldedWidth > 0) {
-                stringResource(R.string.wallpaper_res_custom_label) + ": " +
-                    "${settings.customWallpaperFoldedWidth}×${settings.customWallpaperFoldedHeight} / " +
-                    "${settings.customWallpaperUnfoldedWidth}×${settings.customWallpaperUnfoldedHeight}"
-            } else {
-                stringResource(R.string.wallpaper_res_mode_auto) +
-                    if (settings.lastDetectedFoldedWidth > 0 || settings.lastDetectedUnfoldedWidth > 0) {
-                        " (${settings.lastDetectedFoldedWidth}×${settings.lastDetectedFoldedHeight} / ${settings.lastDetectedUnfoldedWidth}×${settings.lastDetectedUnfoldedHeight})"
-                    } else ""
-            }
-            SettingsActionRow(
-                title = stringResource(R.string.wallpaper_resolutions_title),
-                modifier = Modifier.settingsSearchTarget(R.string.wallpaper_resolutions_title),
-                body = wallpaperResSubtitle,
-                icon = Icons.Rounded.Wallpaper,
-                onClick = onShowWallpaperResolutionsDialog,
-            )
-        }
-    }
-}
-
-/** "Extra": switches for options most phones do not need. */
-@Composable
-private fun ExtraSettingsSectionContent(
-    settings: AppSettings,
-    onShowFoldableSettings: (Boolean) -> Unit,
-    smartSearch: SmartSearchSettingsUi?,
-) {
-    SettingsCardContainer {
-        SettingsSwitchRow(
-            title = stringResource(R.string.show_foldable_settings_title),
-            modifier = Modifier.settingsSearchTarget(R.string.show_foldable_settings_title),
-            body = stringResource(
-                if (settings.foldableDetected) R.string.show_foldable_settings_detected
-                else R.string.show_foldable_settings_body,
-            ),
-            // On a foldable they are always shown: the switch stays on.
-            checked = settings.extraViewSettingsShown,
-            enabled = !settings.foldableDetected,
-            onCheckedChange = onShowFoldableSettings,
-            icon = Icons.Rounded.Devices,
-        )
-    }
-    if (smartSearch != null) {
-        Spacer(Modifier.height(12.dp))
-        SmartSearchSettingsCard(settings, smartSearch)
     }
 }
 
@@ -2368,7 +2397,7 @@ private fun SmartSearchSettingsCard(settings: AppSettings, ui: SmartSearchSettin
     var showAiEffects by rememberSaveable { mutableStateOf(false) }
     var showIndexFolders by rememberSaveable { mutableStateOf(false) }
     val modelSize = (model as? SmartSearch.ModelState.Ready)?.let {
-        android.text.format.Formatter.formatShortFileSize(context, it.manifest.totalBytes)
+        formatFileSize(it.manifest.totalBytes)
     }
     val aiEffects = settings.aiEffects
     // Switching the AI search on lights a ring around it for a moment.
@@ -2401,6 +2430,7 @@ private fun SmartSearchSettingsCard(settings: AppSettings, ui: SmartSearchSettin
                 ui.onEnable(on)
             },
             icon = Icons.Rounded.AutoAwesome,
+            preview = { OptionPreview(OptionPreviewKind.AI_SEARCH, active = settings.smartSearchEnabled) },
         )
         SettingsItemDivider()
         SettingsActionRow(
@@ -2575,16 +2605,17 @@ private fun SmartSearchSettingsCard(settings: AppSettings, ui: SmartSearchSettin
 @Composable
 private fun FoldersSettingsSectionContent(
     settings: AppSettings,
+    albums: List<Album>,
+    allAlbums: List<Album>,
     showHeader: Boolean,
+    onShowAllFiles: (Boolean) -> Unit,
+    onShowOtherFileFolders: (Boolean) -> Unit,
+    onHideFavoritesFolder: (Boolean) -> Unit,
     onMultiFolderMemory: (MultiFolderMemory) -> Unit,
     onRememberFolderScrollAcrossSessions: (Boolean) -> Unit,
     onNewContentScrollsToTop: (Boolean) -> Unit,
-    onShowHidden: (Boolean) -> Unit,
-    onHideFavoritesFolder: (Boolean) -> Unit,
+    onShowNewpipeFolderDialog: () -> Unit,
     onShowFolderHelp: (FolderHelpTopic) -> Unit,
-    albums: List<Album>,
-    onUpdateHiddenCover: ((dev.ander.alexet.data.HiddenCoverConfig) -> dev.ander.alexet.data.HiddenCoverConfig) -> Unit,
-    onPickHiddenCoverImage: (android.net.Uri) -> Unit,
 ) {
     if (showHeader) {
         SettingsSectionHeader(
@@ -2593,6 +2624,42 @@ private fun FoldersSettingsSectionContent(
         )
     }
     SettingsCardContainer {
+        // Pliki inne niż zdjęcia i filmy
+        SettingsSwitchRow(
+            title = stringResource(R.string.show_all_files_title),
+            modifier = Modifier.settingsSearchTarget(R.string.show_all_files_title),
+            body = stringResource(R.string.show_all_files_body),
+            checked = settings.showAllFiles,
+            onCheckedChange = onShowAllFiles,
+            icon = Icons.Rounded.InsertDriveFile,
+            preview = { OptionPreview(OptionPreviewKind.ALL_FILES, active = settings.showAllFiles) },
+        )
+        SettingsSwitchRow(
+            title = stringResource(R.string.show_other_file_folders_title),
+            modifier = Modifier.settingsSearchTarget(R.string.show_other_file_folders_title),
+            body = stringResource(R.string.show_other_file_folders_body),
+            checked = settings.showOtherFileFolders,
+            onCheckedChange = onShowOtherFileFolders,
+            icon = Icons.Rounded.FolderOpen,
+            preview = { OptionPreview(OptionPreviewKind.OTHER_FILE_FOLDERS, active = settings.showOtherFileFolders) },
+        )
+
+        SettingsItemDivider()
+
+        // Ukrywanie folderu Ulubione
+        SettingsSwitchRow(
+            title = stringResource(R.string.hide_favorites_folder),
+            modifier = Modifier.settingsSearchTarget(R.string.hide_favorites_folder),
+            body = stringResource(R.string.settings_hide_favorites_short),
+            checked = settings.hideFavoritesFolder,
+            onCheckedChange = onHideFavoritesFolder,
+            onInfoClick = { onShowFolderHelp(FolderHelpTopic.FAVORITES) },
+            icon = Icons.Rounded.Star,
+            preview = { OptionPreview(OptionPreviewKind.HIDE_FAVORITES, active = settings.hideFavoritesFolder) },
+        )
+
+        SettingsItemDivider()
+
         if (settings.extraViewSettingsShown) {
             // Pamięć otwartych paneli (multiFolderMemory)
             Column(
@@ -2667,6 +2734,7 @@ private fun FoldersSettingsSectionContent(
             onCheckedChange = onRememberFolderScrollAcrossSessions,
             onInfoClick = { onShowFolderHelp(FolderHelpTopic.SCROLL) },
             icon = Icons.Rounded.History,
+            preview = { OptionPreview(OptionPreviewKind.REMEMBER_SCROLL, active = settings.rememberFolderScrollAcrossSessions) },
         )
 
         SettingsItemDivider()
@@ -2680,53 +2748,27 @@ private fun FoldersSettingsSectionContent(
             onCheckedChange = onNewContentScrollsToTop,
             onInfoClick = { onShowFolderHelp(FolderHelpTopic.NEW_CONTENT) },
             icon = Icons.Rounded.ArrowUpward,
+            preview = { OptionPreview(OptionPreviewKind.NEW_CONTENT_TOP, active = settings.newContentScrollsToTop) },
         )
 
         SettingsItemDivider()
 
-        // Ukryte pliki i foldery (.nomedia)
-        SettingsSwitchRow(
-            title = stringResource(R.string.show_hidden),
-            modifier = Modifier.settingsSearchTarget(R.string.show_hidden),
-            body = stringResource(if (settings.showHidden && !rememberAllFilesAccess()) R.string.show_hidden_no_access else R.string.show_hidden_body),
-            checked = settings.showHidden,
-            onCheckedChange = onShowHidden,
-            onInfoClick = { onShowFolderHelp(FolderHelpTopic.HIDDEN) },
-            icon = Icons.Rounded.VisibilityOff,
-        )
-
-        SettingsItemDivider()
-
-        // Okładki ukrytych folderów (.nomedia) z filtrem
-        var showHiddenCover by rememberSaveable { mutableStateOf(false) }
-        SettingsActionRow(
-            title = stringResource(R.string.hidden_cover_title),
-            modifier = Modifier.settingsSearchTarget(R.string.hidden_cover_title),
-            body = stringResource(hiddenCoverStyleName(settings.hiddenCover.style)),
-            icon = Icons.Rounded.BlurOn,
-            onClick = { showHiddenCover = true },
-        )
-        SettingsSubPage(open = showHiddenCover, onClose = { showHiddenCover = false }) { onBack ->
-            HiddenCoverSettingsPage(
-                config = settings.hiddenCover,
-                albums = albums,
-                onUpdate = onUpdateHiddenCover,
-                onPickImage = onPickHiddenCoverImage,
-                onBack = onBack,
-            )
+        // Folder pobrań NewPipe: nowe pliki widać od razu
+        val newpipePath = settings.newpipeFolderRelativePath.trim().trim('/')
+        val newpipeAlbum = (albums + allAlbums).firstOrNull { album ->
+            album.relativePath.trim().trim('/').equals(newpipePath, ignoreCase = true)
         }
-
-        SettingsItemDivider()
-
-        // Ukrywanie folderu Ulubione
-        SettingsSwitchRow(
-            title = stringResource(R.string.hide_favorites_folder),
-            modifier = Modifier.settingsSearchTarget(R.string.hide_favorites_folder),
-            body = stringResource(R.string.settings_hide_favorites_short),
-            checked = settings.hideFavoritesFolder,
-            onCheckedChange = onHideFavoritesFolder,
-            onInfoClick = { onShowFolderHelp(FolderHelpTopic.FAVORITES) },
-            icon = Icons.Rounded.Star,
+        SettingsActionRow(
+            title = stringResource(R.string.newpipe_folder_title),
+            modifier = Modifier.settingsSearchTarget(R.string.newpipe_folder_title),
+            body = when {
+                newpipeAlbum != null -> newpipeAlbum.name
+                newpipePath.isNotEmpty() -> newpipePath
+                else -> stringResource(R.string.newpipe_folder_empty)
+            },
+            icon = Icons.Rounded.FileDownload,
+            preview = { OptionPreview(OptionPreviewKind.NEWPIPE, active = newpipePath.isNotEmpty()) },
+            onClick = onShowNewpipeFolderDialog,
         )
     }
 }
@@ -2734,7 +2776,12 @@ private fun FoldersSettingsSectionContent(
 @Composable
 private fun PrivacySettingsSectionContent(
     settings: AppSettings,
+    albums: List<Album>,
     showHeader: Boolean,
+    onShowHidden: (Boolean) -> Unit,
+    onShowFolderHelp: (FolderHelpTopic) -> Unit,
+    onUpdateHiddenCover: ((dev.ander.alexet.data.HiddenCoverConfig) -> dev.ander.alexet.data.HiddenCoverConfig) -> Unit,
+    onPickHiddenCoverImage: (android.net.Uri) -> Unit,
     onRandomizeFileNamesInPrivateFolders: (Boolean) -> Unit,
     onStripExifInPrivateFolders: (Boolean) -> Unit,
     onStripExifOnShare: (Boolean) -> Unit,
@@ -2757,6 +2804,41 @@ private fun PrivacySettingsSectionContent(
             body = stringResource(R.string.secure_folder_settings_desc),
             icon = Icons.Rounded.Lock,
         )
+
+        SettingsItemDivider()
+
+        // Ukryte pliki i foldery (.nomedia)
+        SettingsSwitchRow(
+            title = stringResource(R.string.show_hidden),
+            modifier = Modifier.settingsSearchTarget(R.string.show_hidden),
+            body = stringResource(if (settings.showHidden && !rememberAllFilesAccess()) R.string.show_hidden_no_access else R.string.show_hidden_body),
+            checked = settings.showHidden,
+            onCheckedChange = onShowHidden,
+            onInfoClick = { onShowFolderHelp(FolderHelpTopic.HIDDEN) },
+            icon = Icons.Rounded.VisibilityOff,
+            preview = { OptionPreview(OptionPreviewKind.SHOW_HIDDEN, active = settings.showHidden) },
+        )
+
+        SettingsItemDivider()
+
+        // Okładki ukrytych folderów (.nomedia) z filtrem
+        var showHiddenCover by rememberSaveable { mutableStateOf(false) }
+        SettingsActionRow(
+            title = stringResource(R.string.hidden_cover_title),
+            modifier = Modifier.settingsSearchTarget(R.string.hidden_cover_title),
+            body = stringResource(hiddenCoverStyleName(settings.hiddenCover.style)),
+            icon = Icons.Rounded.BlurOn,
+            onClick = { showHiddenCover = true },
+        )
+        SettingsSubPage(open = showHiddenCover, onClose = { showHiddenCover = false }) { onBack ->
+            HiddenCoverSettingsPage(
+                config = settings.hiddenCover,
+                albums = albums,
+                onUpdate = onUpdateHiddenCover,
+                onPickImage = onPickHiddenCoverImage,
+                onBack = onBack,
+            )
+        }
 
         SettingsItemDivider()
 
@@ -2784,6 +2866,7 @@ private fun PrivacySettingsSectionContent(
             checked = settings.randomizeFileNamesInPrivateFolders,
             onCheckedChange = onRandomizeFileNamesInPrivateFolders,
             icon = Icons.Rounded.AutoFixHigh,
+            preview = { OptionPreview(OptionPreviewKind.RANDOM_NAMES, active = settings.randomizeFileNamesInPrivateFolders) },
             onInfoClick = onShowPrivacyHelp,
         )
 
@@ -2797,6 +2880,7 @@ private fun PrivacySettingsSectionContent(
             checked = settings.stripExifInPrivateFolders,
             onCheckedChange = onStripExifInPrivateFolders,
             icon = Icons.Rounded.Security,
+            preview = { OptionPreview(OptionPreviewKind.STRIP_EXIF, active = settings.stripExifInPrivateFolders) },
             onInfoClick = onShowPrivacyHelp,
         )
 
@@ -2810,6 +2894,7 @@ private fun PrivacySettingsSectionContent(
             checked = settings.stripExifOnShare,
             onCheckedChange = onStripExifOnShare,
             icon = Icons.Rounded.Share,
+            preview = { OptionPreview(OptionPreviewKind.STRIP_EXIF_SHARE, active = settings.stripExifOnShare) },
             onInfoClick = onShowPrivacyHelp,
         )
     }
@@ -2818,48 +2903,44 @@ private fun PrivacySettingsSectionContent(
 @Composable
 private fun PlayerSettingsSectionContent(
     settings: AppSettings,
-    albums: List<Album>,
-    allAlbums: List<Album>,
     showHeader: Boolean,
-    onNewpipeFolder: (String) -> Unit,
     onVideoDoubleClickToGallery: (Boolean) -> Unit,
     onUpdatePlayerConfig: ((dev.ander.alexet.integration.AnderLineConfig) -> dev.ander.alexet.integration.AnderLineConfig) -> Unit,
     onAutoplayGifs: (Boolean) -> Unit,
     onShowNavArrows: (Boolean) -> Unit,
-    onSearchFilesFullScreen: (Boolean) -> Unit,
-    onFileSelectMode: (FileSelectMode) -> Unit,
-    onOperationsFollowSelectionOrder: (Boolean) -> Unit,
-    onSaveSelectionActionsConfig: (List<SelectionAction?>, List<SelectionAction>, Set<SelectionAction>) -> Unit,
-    onToggleSelectionActionVisibility: (SelectionAction) -> Unit,
-    onShowNewpipeFolderDialog: () -> Unit,
     onShowBehaviorHelp: () -> Unit,
-    onShowSelectHelp: () -> Unit,
-    onShowActionCardsHelp: () -> Unit,
-    onDraggingChanged: (Boolean) -> Unit,
 ) {
     if (showHeader) {
         SettingsSectionHeader(
             title = stringResource(R.string.settings_category_player),
             icon = Icons.Rounded.PlayCircle,
             onInfoClick = onShowBehaviorHelp,
-            infoDescription = stringResource(R.string.settings_help_for, stringResource(SettingsCategory.PLAYER.titleRes)),
+            infoDescription = stringResource(R.string.settings_help_for, stringResource(SettingsCategory.VIEWING.titleRes)),
         )
     }
     SettingsCardContainer {
-        val newpipePath = settings.newpipeFolderRelativePath.trim().trim('/')
-        val newpipeAlbum = (albums + allAlbums).firstOrNull { album ->
-            album.relativePath.trim().trim('/').equals(newpipePath, ignoreCase = true)
-        }
-        SettingsActionRow(
-            title = stringResource(R.string.newpipe_folder_title),
-            modifier = Modifier.settingsSearchTarget(R.string.newpipe_folder_title),
-            body = when {
-                newpipeAlbum != null -> newpipeAlbum.name
-                newpipePath.isNotEmpty() -> newpipePath
-                else -> stringResource(R.string.newpipe_folder_empty)
-            },
-            icon = Icons.Rounded.FileDownload,
-            onClick = onShowNewpipeFolderDialog,
+        // Autoodtwarzanie GIF
+        SettingsSwitchRow(
+            title = stringResource(R.string.autoplay_gifs),
+            modifier = Modifier.settingsSearchTarget(R.string.autoplay_gifs),
+            body = stringResource(R.string.autoplay_gifs_body),
+            checked = settings.autoplayGifs,
+            onCheckedChange = onAutoplayGifs,
+            icon = Icons.Rounded.Animation,
+            preview = { PlayerOptionPreview(PlayerPreviewKind.GIF, active = settings.autoplayGifs) },
+        )
+
+        SettingsItemDivider()
+
+        // Strzałki nawigacyjne
+        SettingsSwitchRow(
+            title = stringResource(R.string.nav_arrows_title),
+            modifier = Modifier.settingsSearchTarget(R.string.nav_arrows_title),
+            body = stringResource(R.string.nav_arrows_body),
+            checked = settings.showNavArrows,
+            onCheckedChange = onShowNavArrows,
+            icon = Icons.Rounded.SwapHoriz,
+            preview = { PlayerOptionPreview(PlayerPreviewKind.NAV_ARROWS, active = settings.showNavArrows) },
         )
 
         SettingsItemDivider()
@@ -2873,6 +2954,36 @@ private fun PlayerSettingsSectionContent(
             onCheckedChange = onVideoDoubleClickToGallery,
             icon = Icons.Rounded.PlayCircle,
             preview = { PlayerOptionPreview(PlayerPreviewKind.DOUBLE_CLICK_PLAYER, active = settings.videoDoubleClickToGallery) },
+        )
+
+        SettingsItemDivider()
+
+        // Obraz w obrazie (przycisk w odtwarzaczu)
+        SettingsSwitchRow(
+            title = stringResource(R.string.pip_title),
+            modifier = Modifier.settingsSearchTarget(R.string.pip_title),
+            body = stringResource(R.string.pip_body),
+            checked = settings.playerConfig.pipButton,
+            onCheckedChange = { checked ->
+                onUpdatePlayerConfig { it.copy(pipButton = checked) }
+            },
+            icon = Icons.Rounded.PictureInPictureAlt,
+            preview = { PlayerOptionPreview(PlayerPreviewKind.PIP, active = settings.playerConfig.pipButton) },
+        )
+
+        SettingsItemDivider()
+
+        // Odtwarzanie w tle
+        SettingsSwitchRow(
+            title = stringResource(R.string.background_play_title),
+            modifier = Modifier.settingsSearchTarget(R.string.background_play_title),
+            body = stringResource(R.string.background_play_body),
+            checked = settings.playerConfig.autoBackgroundPlay,
+            onCheckedChange = { checked ->
+                onUpdatePlayerConfig { it.copy(autoBackgroundPlay = checked) }
+            },
+            icon = Icons.Rounded.Headphones,
+            preview = { PlayerOptionPreview(PlayerPreviewKind.BACKGROUND_PLAY, active = settings.playerConfig.autoBackgroundPlay) },
         )
 
         SettingsItemDivider()
@@ -3079,6 +3190,7 @@ private fun PlayerSettingsSectionContent(
                 stringResource(R.string.sponsorblock_settings_off)
             },
             icon = Icons.Rounded.FastForward,
+            preview = { OptionPreview(OptionPreviewKind.SPONSORBLOCK, active = settings.playerConfig.sponsorBlockEnabled) },
             onClick = { showSponsorBlock = true },
         )
         SettingsSubPage(open = showSponsorBlock, onClose = { showSponsorBlock = false }) { onBack ->
@@ -3088,47 +3200,22 @@ private fun PlayerSettingsSectionContent(
                 onBack = onBack,
             )
         }
+    }
+}
 
-        SettingsItemDivider()
-
-        // Autoodtwarzanie GIF
-        SettingsSwitchRow(
-            title = stringResource(R.string.autoplay_gifs),
-            modifier = Modifier.settingsSearchTarget(R.string.autoplay_gifs),
-            body = stringResource(R.string.autoplay_gifs_body),
-            checked = settings.autoplayGifs,
-            onCheckedChange = onAutoplayGifs,
-            icon = Icons.Rounded.Animation,
-            preview = { PlayerOptionPreview(PlayerPreviewKind.GIF, active = settings.autoplayGifs) },
-        )
-
-        SettingsItemDivider()
-
-        // Strzałki nawigacyjne
-        SettingsSwitchRow(
-            title = stringResource(R.string.nav_arrows_title),
-            modifier = Modifier.settingsSearchTarget(R.string.nav_arrows_title),
-            body = stringResource(R.string.nav_arrows_body),
-            checked = settings.showNavArrows,
-            onCheckedChange = onShowNavArrows,
-            icon = Icons.Rounded.SwapHoriz,
-            preview = { PlayerOptionPreview(PlayerPreviewKind.NAV_ARROWS, active = settings.showNavArrows) },
-        )
-
-        SettingsItemDivider()
-
-        // Pełnoekranowe wyszukiwanie plików
-        SettingsSwitchRow(
-            title = stringResource(R.string.search_files_fullscreen),
-            modifier = Modifier.settingsSearchTarget(R.string.search_files_fullscreen),
-            body = stringResource(R.string.search_files_fullscreen_body),
-            checked = settings.searchFilesFullScreen,
-            onCheckedChange = onSearchFilesFullScreen,
-            icon = Icons.Rounded.Fullscreen,
-        )
-
-        SettingsItemDivider()
-
+/** Selecting files on the grid and what the action bar offers for them. */
+@Composable
+private fun SelectionSettingsSectionContent(
+    settings: AppSettings,
+    onFileSelectMode: (FileSelectMode) -> Unit,
+    onOperationsFollowSelectionOrder: (Boolean) -> Unit,
+    onSaveSelectionActionsConfig: (List<SelectionAction?>, List<SelectionAction>, Set<SelectionAction>) -> Unit,
+    onToggleSelectionActionVisibility: (SelectionAction) -> Unit,
+    onShowSelectHelp: () -> Unit,
+    onShowActionCardsHelp: () -> Unit,
+    onDraggingChanged: (Boolean) -> Unit,
+) {
+    SettingsCardContainer {
         // Styl zaznaczania na siatce (Prostokąt / Liniowy)
         Column(
             modifier = Modifier.settingsSearchTarget(R.string.settings_select_style_label)
@@ -3139,6 +3226,12 @@ private fun PlayerSettingsSectionContent(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                OptionPreview(
+                    OptionPreviewKind.SELECT_STYLE,
+                    active = true,
+                    linearSelect = settings.fileSelectMode == FileSelectMode.LINEAR,
+                )
+                Spacer(Modifier.width(14.dp))
                 Text(
                     text = stringResource(R.string.settings_select_style_label),
                     style = MaterialTheme.typography.bodyMedium,
@@ -3179,6 +3272,7 @@ private fun PlayerSettingsSectionContent(
             checked = settings.operationsFollowSelectionOrder,
             onCheckedChange = onOperationsFollowSelectionOrder,
             icon = Icons.AutoMirrored.Rounded.Sort,
+            preview = { OptionPreview(OptionPreviewKind.SELECTION_ORDER, active = settings.operationsFollowSelectionOrder) },
         )
 
         SettingsItemDivider()
@@ -3224,10 +3318,39 @@ private fun PlayerSettingsSectionContent(
     }
 }
 
+/** Search results, and the AI search with its model and photo index. */
+@Composable
+private fun SearchSettingsSectionContent(
+    settings: AppSettings,
+    onSearchFilesFullScreen: (Boolean) -> Unit,
+    smartSearch: SmartSearchSettingsUi?,
+) {
+    SettingsCardContainer {
+        // Pełnoekranowe wyszukiwanie plików
+        SettingsSwitchRow(
+            title = stringResource(R.string.search_files_fullscreen),
+            modifier = Modifier.settingsSearchTarget(R.string.search_files_fullscreen),
+            body = stringResource(R.string.search_files_fullscreen_body),
+            checked = settings.searchFilesFullScreen,
+            onCheckedChange = onSearchFilesFullScreen,
+            icon = Icons.Rounded.Fullscreen,
+            preview = { OptionPreview(OptionPreviewKind.SEARCH_FULLSCREEN, active = settings.searchFilesFullScreen) },
+        )
+    }
+    if (smartSearch != null) {
+        Spacer(Modifier.height(12.dp))
+        SmartSearchSettingsCard(settings, smartSearch)
+    }
+}
+
 @Composable
 private fun SystemSettingsSectionContent(
+    settings: AppSettings,
     debugLogging: Boolean = false,
     showHeader: Boolean,
+    onLightMode: (Boolean) -> Unit,
+    onHighResThumbnails: (Boolean) -> Unit,
+    onShowWallpaperResolutionsDialog: () -> Unit,
     onExportConfig: () -> Unit,
     onDebugLoggingChange: (Boolean) -> Unit = {},
     onClearDebugLog: () -> Unit = {},
@@ -3240,10 +3363,55 @@ private fun SystemSettingsSectionContent(
             title = stringResource(R.string.settings_category_system),
             icon = Icons.Rounded.SaveAlt,
             onInfoClick = onShowMaintenanceHelp,
-            infoDescription = stringResource(R.string.settings_help_for, stringResource(SettingsCategory.SYSTEM.titleRes)),
+            infoDescription = stringResource(R.string.settings_help_for, stringResource(SettingsCategory.APP.titleRes)),
         )
     }
     SettingsCardContainer {
+        // Tryb lekki
+        SettingsSwitchRow(
+            title = stringResource(R.string.light_mode_title),
+            modifier = Modifier.settingsSearchTarget(R.string.light_mode_title),
+            body = stringResource(R.string.light_mode_body),
+            checked = settings.lightMode,
+            onCheckedChange = onLightMode,
+            icon = Icons.Rounded.Speed,
+        )
+        SettingsItemDivider()
+        // Miniatury
+        SettingsSwitchRow(
+            title = stringResource(R.string.thumbnails_high_res_title),
+            modifier = Modifier.settingsSearchTarget(R.string.thumbnails_high_res_title),
+            body = stringResource(R.string.thumbnails_high_res_body),
+            checked = settings.highResThumbnails,
+            onCheckedChange = onHighResThumbnails,
+            icon = Icons.Rounded.PhotoSizeSelectLarge,
+            preview = { OptionPreview(OptionPreviewKind.SHARP_THUMBNAILS, active = settings.highResThumbnails) },
+        )
+        if (settings.foldOnlySettingsShown) {
+            SettingsItemDivider()
+
+            // Rozdzielczości tapet
+            val wallpaperResSubtitle = if (settings.customWallpaperFoldedWidth > 0 || settings.customWallpaperUnfoldedWidth > 0) {
+                stringResource(R.string.wallpaper_res_custom_label) + ": " +
+                    "${settings.customWallpaperFoldedWidth}×${settings.customWallpaperFoldedHeight} / " +
+                    "${settings.customWallpaperUnfoldedWidth}×${settings.customWallpaperUnfoldedHeight}"
+            } else {
+                stringResource(R.string.wallpaper_res_mode_auto) +
+                    if (settings.lastDetectedFoldedWidth > 0 || settings.lastDetectedUnfoldedWidth > 0) {
+                        " (${settings.lastDetectedFoldedWidth}×${settings.lastDetectedFoldedHeight} / ${settings.lastDetectedUnfoldedWidth}×${settings.lastDetectedUnfoldedHeight})"
+                    } else ""
+            }
+            SettingsActionRow(
+                title = stringResource(R.string.wallpaper_resolutions_title),
+                modifier = Modifier.settingsSearchTarget(R.string.wallpaper_resolutions_title),
+                body = wallpaperResSubtitle,
+                icon = Icons.Rounded.Wallpaper,
+                onClick = onShowWallpaperResolutionsDialog,
+            )
+        }
+        SettingsItemDivider()
+        DuplicatesSettingsRow()
+        SettingsItemDivider()
         SettingsActionRow(
             title = stringResource(R.string.config_export),
             modifier = Modifier.settingsSearchTarget(R.string.config_export),
@@ -3268,6 +3436,8 @@ private fun SystemSettingsSectionContent(
             onClick = onResetThumbnails,
             isDestructive = true,
         )
+        SettingsItemDivider()
+        UpdatesSettingsRows(settings)
         SettingsItemDivider()
         var confirmDebugLogging by remember { mutableStateOf(false) }
         if (confirmDebugLogging) {
@@ -3403,7 +3573,7 @@ private fun rememberAllFilesAccess(): Boolean {
 }
 
 @Composable
-private fun SettingsSwitchRow(
+internal fun SettingsSwitchRow(
     title: String,
     body: String? = null,
     checked: Boolean,
@@ -3481,7 +3651,7 @@ private fun SettingsSwitchRow(
 }
 
 @Composable
-private fun SettingsActionRow(
+internal fun SettingsActionRow(
     title: String,
     body: String? = null,
     icon: ImageVector,
@@ -3489,6 +3659,8 @@ private fun SettingsActionRow(
     onInfoClick: (() -> Unit)? = null,
     trailingContent: (@Composable () -> Unit)? = null,
     isDestructive: Boolean = false,
+    /** Shown instead of [icon]: a live picture of the option. */
+    preview: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Row(
@@ -3500,7 +3672,9 @@ private fun SettingsActionRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Surface(
+        if (preview != null) {
+            preview()
+        } else Surface(
             shape = CircleShape,
             color = if (isDestructive) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
                 else MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -4605,19 +4779,6 @@ private fun ViewHelpDialog(onDismiss: () -> Unit) {
             }
         }
 
-        HelpFeatureCard(
-            title = stringResource(R.string.wallpaper_resolutions_title),
-            badge = stringResource(R.string.settings_badge_wallpapers),
-            body = stringResource(R.string.settings_wallpaper_res_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.Wallpaper, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                Text(stringResource(R.string.settings_wallpaper_res_hint), style = MaterialTheme.typography.labelMedium)
-            }
-        }
     }
 }
 
@@ -4715,48 +4876,6 @@ private fun BehaviorHelpDialog(onDismiss: () -> Unit) {
                 Text(stringResource(R.string.settings_nav_buttons_hint), style = MaterialTheme.typography.labelMedium)
             }
         }
-
-        HelpFeatureCard(
-            title = stringResource(R.string.search_files_fullscreen),
-            badge = stringResource(R.string.settings_badge_search),
-            body = stringResource(R.string.search_files_fullscreen_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.GridView, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                Text(stringResource(R.string.settings_search_full_hint), style = MaterialTheme.typography.labelMedium)
-            }
-        }
-
-        HelpFeatureCard(
-            title = stringResource(R.string.settings_select_style_title),
-            badge = stringResource(R.string.settings_badge_selection),
-            body = stringResource(R.string.settings_select_style_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.Check, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                Text(stringResource(R.string.settings_select_style_hint), style = MaterialTheme.typography.labelMedium)
-            }
-        }
-
-        HelpFeatureCard(
-            title = stringResource(R.string.operations_follow_selection_order),
-            badge = stringResource(R.string.settings_badge_order),
-            body = stringResource(R.string.operations_follow_selection_order_body) + " " + stringResource(R.string.operations_follow_selection_order_info),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.AutoMirrored.Rounded.Sort, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                Text(stringResource(R.string.settings_click_order_hint), style = MaterialTheme.typography.labelMedium)
-            }
-        }
     }
 }
 
@@ -4846,6 +4965,92 @@ private fun MaintenanceHelpDialog(onDismiss: () -> Unit) {
             ) {
                 Icon(Icons.Rounded.RestartAlt, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
                 Text(stringResource(R.string.settings_cache_hint), style = MaterialTheme.typography.labelMedium)
+            }
+        }
+
+        HelpFeatureCard(
+            title = stringResource(R.string.wallpaper_resolutions_title),
+            badge = stringResource(R.string.settings_badge_wallpapers),
+            body = stringResource(R.string.settings_wallpaper_res_body),
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Rounded.Wallpaper, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
+                Text(stringResource(R.string.settings_wallpaper_res_hint), style = MaterialTheme.typography.labelMedium)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SelectionHelpDialog(onDismiss: () -> Unit) {
+    SettingsInfoDialog(
+        title = stringResource(R.string.settings_category_selection),
+        onDismiss = onDismiss,
+    ) {
+        HelpFeatureCard(
+            title = stringResource(R.string.settings_select_style_title),
+            badge = stringResource(R.string.settings_badge_selection),
+            body = stringResource(R.string.settings_select_style_body),
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Rounded.Check, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
+                Text(stringResource(R.string.settings_select_style_hint), style = MaterialTheme.typography.labelMedium)
+            }
+        }
+
+        HelpFeatureCard(
+            title = stringResource(R.string.operations_follow_selection_order),
+            badge = stringResource(R.string.settings_badge_order),
+            body = stringResource(R.string.operations_follow_selection_order_body) + " " + stringResource(R.string.operations_follow_selection_order_info),
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.AutoMirrored.Rounded.Sort, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
+                Text(stringResource(R.string.settings_click_order_hint), style = MaterialTheme.typography.labelMedium)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchHelpDialog(onDismiss: () -> Unit) {
+    SettingsInfoDialog(
+        title = stringResource(R.string.settings_category_extra),
+        onDismiss = onDismiss,
+    ) {
+        HelpFeatureCard(
+            title = stringResource(R.string.search_files_fullscreen),
+            badge = stringResource(R.string.settings_badge_search),
+            body = stringResource(R.string.search_files_fullscreen_body),
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Rounded.GridView, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
+                Text(stringResource(R.string.settings_search_full_hint), style = MaterialTheme.typography.labelMedium)
+            }
+        }
+
+        HelpFeatureCard(
+            title = stringResource(R.string.smart_search_title),
+            badge = "AI",
+            body = stringResource(R.string.smart_search_body),
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Rounded.ImageSearch, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
+                Text(stringResource(R.string.smart_search_needs_model), style = MaterialTheme.typography.labelMedium)
             }
         }
     }
@@ -6582,6 +6787,7 @@ private fun actionTitleRes(action: SelectionAction): Int = when (action) {
     SelectionAction.STRIP_EXIF -> R.string.strip_exif
     SelectionAction.CONTENT_ORDER -> R.string.content_order_action
     SelectionAction.SET_PRIVATE -> R.string.set_private
+    SelectionAction.QUICK_EDIT -> R.string.quick_edit
 }
 
 private fun actionIcon(action: SelectionAction) = when (action) {
@@ -6599,6 +6805,7 @@ private fun actionIcon(action: SelectionAction) = when (action) {
     SelectionAction.STRIP_EXIF -> Icons.Rounded.Security
     SelectionAction.CONTENT_ORDER -> Icons.Rounded.FormatListNumbered
     SelectionAction.SET_PRIVATE -> Icons.Rounded.Lock
+    SelectionAction.QUICK_EDIT -> Icons.Rounded.Bolt
 }
 
 @Composable

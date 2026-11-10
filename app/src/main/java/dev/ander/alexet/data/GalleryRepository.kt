@@ -29,6 +29,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
@@ -191,6 +192,16 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         dev.ander.alexet.data.AppLog.e("GalleryRepository", "Uncaught coroutine exception", throwable)
     }
     private val scanDispatcher = Dispatchers.IO.limitedParallelism(2)
+    /**
+     * Chores nothing on screen waits for (starting the folder watchers, the walk for hidden
+     * folders): low-priority threads, so the frames being drawn get the fast cores first.
+     */
+    private val choresDispatcher = java.util.concurrent.Executors.newFixedThreadPool(2) { r ->
+        Thread({
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            r.run()
+        }, "alexet-chores").apply { isDaemon = true }
+    }.asCoroutineDispatcher()
     private val queryDispatcher = Dispatchers.IO.limitedParallelism(1)
     private val queryMutex = kotlinx.coroutines.sync.Mutex()
     private val folderLoadTimestamps = java.util.concurrent.ConcurrentHashMap<Long, Long>()
@@ -413,7 +424,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
             // Called from ON_START on the main thread; listing the watched trees stats thousands
             // of files and blocked the return transition from other apps (NextPlayer) for seconds.
             watchSetupJob?.cancel()
-            watchSetupJob = ioScope.launch {
+            watchSetupJob = ioScope.launch(choresDispatcher) {
                 startDirObservers()
                 applyNewpipeFolder(settings.settings.value.newpipeFolderRelativePath)
                 watchDownloader()
@@ -1275,8 +1286,8 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         return media
             .filterNot {
                 it.bucketId == AlbumIds.TRASH ||
-                it.relativePath.contains(".alexet_trash", ignoreCase = true) ||
-                it.absolutePath?.contains(".alexet_trash", ignoreCase = true) == true ||
+                hasTrashMarker(it.relativePath) ||
+                it.absolutePath?.let(::hasTrashMarker) == true ||
                 it.bucketName.equals(".alexet_trash", ignoreCase = true)
             }
             .groupBy { it.bucketId }
@@ -4721,7 +4732,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         hiddenScanJob = ioScope.launch {
             delay(delayMs)
             if (epoch != nomediaScanEpoch.get() || !scanHidden.get()) return@launch
-            val full = walkHiddenFolders()
+            val full = withContext(choresDispatcher) { walkHiddenFolders() }
             if (epoch != nomediaScanEpoch.get() || !scanHidden.get()) return@launch
             storeWalk(full)
         }
@@ -5197,11 +5208,8 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                     val taken = if (takenIdx >= 0) rows.getLong(takenIdx) else 0L
                     val modifiedSec = if (modifiedIdx >= 0) rows.getLong(modifiedIdx) else addedSec
                     val rawMime = rows.getString(mimeIdx)
-                    val extMime = if (rawMime.isNullOrBlank() || rawMime == "application/octet-stream" || rawMime == "application/x-matroska") {
-                        NomediaScanner.mimeOf(File(name)) ?: rawMime
-                    } else {
-                        rawMime
-                    }
+                    // A photo or video the system gave a general type ("application/binary"...) gets its own.
+                    val extMime = NomediaScanner.mediaMimeOf(rawMime, name)
                     val mime = extMime ?: if (isVideo) "video/*" else "image/*"
                     val itemIsVideo = isVideo || mime.startsWith("video/", ignoreCase = true) || NomediaScanner.mimeOf(File(name))?.startsWith("video/") == true
                     val isMedia = itemIsVideo || mime.startsWith("image/", ignoreCase = true) || NomediaScanner.mimeOf(File(name))?.startsWith("image/") == true
@@ -5432,6 +5440,9 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         requestRefresh()
         true
     }
+
+    /** [album]'s folder on the disk; null when it can't be found. Reads the disk. */
+    fun folderDirectory(album: Album): File? = directoryForAlbum(album)
 
     private fun directoryForAlbum(album: Album): File? {
         nomediaScanner.directoryForRelativePath(album.relativePath)?.let { return it }

@@ -53,7 +53,7 @@ class SettingsSearchEntry(
 
 /**
  * "Extra view" options (folders and contents side by side, e.g. a phone turned sideways): on a
- * foldable, or with the switch in the "Extra" card.
+ * foldable, or with the switch in the "View" card.
  */
 val AppSettings.extraViewSettingsShown: Boolean
     get() = foldableDetected || showFoldableSettings
@@ -80,6 +80,7 @@ val settingsSearchEntries: List<SettingsSearchEntry> = listOf(
     ),
     SettingsSearchEntry(R.string.settings_file_columns_label, SettingsCategory.VIEW, R.string.settings_file_columns_desc, visible = notWide),
     SettingsSearchEntry(R.string.pane_split_title, SettingsCategory.VIEW, visible = notWide),
+    SettingsSearchEntry(R.string.dynamic_split_title, SettingsCategory.VIEW, R.string.dynamic_split_body, visible = notWide),
     SettingsSearchEntry(R.string.auto_fold_split_title, SettingsCategory.VIEW, R.string.auto_fold_split_body, visible = { notWide(it) && foldOnly(it) }),
     SettingsSearchEntry(
         R.string.fold_split_angle_title, SettingsCategory.VIEW, R.string.fold_split_angle_body,
@@ -88,78 +89,83 @@ val settingsSearchEntries: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry(R.string.show_file_names, SettingsCategory.VIEW, R.string.show_file_names_body),
     SettingsSearchEntry(R.string.grid_columns, SettingsCategory.VIEW, R.string.grid_columns_body),
     SettingsSearchEntry(R.string.file_columns_title, SettingsCategory.VIEW, R.string.file_columns_body),
-    SettingsSearchEntry(R.string.show_all_files_title, SettingsCategory.VIEW, R.string.show_all_files_body),
-    SettingsSearchEntry(R.string.show_other_file_folders_title, SettingsCategory.VIEW, R.string.show_other_file_folders_body),
+    SettingsSearchEntry(R.string.show_all_files_title, SettingsCategory.FOLDERS, R.string.show_all_files_body),
+    SettingsSearchEntry(R.string.show_other_file_folders_title, SettingsCategory.FOLDERS, R.string.show_other_file_folders_body),
     SettingsSearchEntry(R.string.video_duration_format_title, SettingsCategory.VIEW, R.string.video_duration_format_body),
-    SettingsSearchEntry(R.string.light_mode_title, SettingsCategory.VIEW, R.string.light_mode_body),
-    SettingsSearchEntry(R.string.thumbnails_high_res_title, SettingsCategory.VIEW, R.string.thumbnails_high_res_body),
+    SettingsSearchEntry(R.string.light_mode_title, SettingsCategory.APP, R.string.light_mode_body),
+    SettingsSearchEntry(R.string.thumbnails_high_res_title, SettingsCategory.APP, R.string.thumbnails_high_res_body),
     SettingsSearchEntry(R.string.scroller_enabled_title, SettingsCategory.VIEW, R.string.scroller_enabled_body),
     SettingsSearchEntry(
         R.string.scroller_position_title, SettingsCategory.VIEW,
         extraRes = listOf(R.string.scroller_left, R.string.scroller_right),
         visible = { it.scrollerEnabled },
     ),
-    SettingsSearchEntry(R.string.scroller_smooth_title, SettingsCategory.VIEW, R.string.scroller_smooth_body, visible = { it.scrollerEnabled }),
-    SettingsSearchEntry(R.string.wallpaper_resolutions_title, SettingsCategory.VIEW, R.string.wallpaper_resolutions_desc, visible = foldOnly),
+    SettingsSearchEntry(R.string.scroller_smooth_title, SettingsCategory.VIEW, R.string.scroller_smooth_body, extraRes = listOf(R.string.scroller_mode_smooth, R.string.scroller_mode_rows), visible = { it.scrollerEnabled }),
+    SettingsSearchEntry(R.string.wallpaper_resolutions_title, SettingsCategory.APP, R.string.wallpaper_resolutions_desc, visible = foldOnly),
     // Folders
     SettingsSearchEntry(R.string.multi_folder_memory_title, SettingsCategory.FOLDERS, R.string.multi_folder_memory_body, visible = extraViewOnly),
     SettingsSearchEntry(R.string.remember_folder_scroll, SettingsCategory.FOLDERS, R.string.remember_folder_scroll_body),
     SettingsSearchEntry(R.string.new_content_scrolls_to_top, SettingsCategory.FOLDERS, R.string.new_content_scrolls_to_top_body),
-    SettingsSearchEntry(R.string.show_hidden, SettingsCategory.FOLDERS, R.string.show_hidden_body),
+    SettingsSearchEntry(R.string.show_hidden, SettingsCategory.PRIVACY, R.string.show_hidden_body),
     SettingsSearchEntry(R.string.hide_favorites_folder, SettingsCategory.FOLDERS, R.string.settings_hide_favorites_short),
-    SettingsSearchEntry(R.string.hidden_cover_title, SettingsCategory.FOLDERS, R.string.hidden_cover_hint),
+    SettingsSearchEntry(R.string.hidden_cover_title, SettingsCategory.PRIVACY, R.string.hidden_cover_hint),
     // Privacy
     SettingsSearchEntry(R.string.secure_folder_settings_title, SettingsCategory.PRIVACY, R.string.secure_folder_settings_desc),
     SettingsSearchEntry(R.string.privatized_folders_title, SettingsCategory.PRIVACY, R.string.privatized_folders_desc),
     SettingsSearchEntry(R.string.randomize_file_names_title, SettingsCategory.PRIVACY, R.string.randomize_file_names_body),
     SettingsSearchEntry(R.string.strip_exif_title, SettingsCategory.PRIVACY, R.string.strip_exif_in_private_folders_body),
     SettingsSearchEntry(R.string.strip_exif_on_share_title, SettingsCategory.PRIVACY, R.string.strip_exif_on_share_body),
-    // Player
-    SettingsSearchEntry(R.string.newpipe_folder_title, SettingsCategory.PLAYER, R.string.newpipe_folder_desc),
-    SettingsSearchEntry(R.string.video_double_click_gallery, SettingsCategory.PLAYER, R.string.video_double_click_gallery_body),
-    SettingsSearchEntry(R.string.player_volume_gesture_title, SettingsCategory.PLAYER, R.string.player_volume_gesture_body),
-    SettingsSearchEntry(R.string.player_brightness_gesture_title, SettingsCategory.PLAYER, R.string.player_brightness_gesture_body),
+    // Viewing
+    SettingsSearchEntry(R.string.newpipe_folder_title, SettingsCategory.FOLDERS, R.string.newpipe_folder_desc),
+    SettingsSearchEntry(R.string.video_double_click_gallery, SettingsCategory.VIEWING, R.string.video_double_click_gallery_body),
+    SettingsSearchEntry(R.string.pip_title, SettingsCategory.VIEWING, R.string.pip_body),
+    SettingsSearchEntry(R.string.background_play_title, SettingsCategory.VIEWING, R.string.background_play_body),
+    SettingsSearchEntry(R.string.player_volume_gesture_title, SettingsCategory.VIEWING, R.string.player_volume_gesture_body),
+    SettingsSearchEntry(R.string.player_brightness_gesture_title, SettingsCategory.VIEWING, R.string.player_brightness_gesture_body),
     SettingsSearchEntry(
-        R.string.player_long_press_speed_title, SettingsCategory.PLAYER, R.string.player_long_press_speed_body,
+        R.string.player_long_press_speed_title, SettingsCategory.VIEWING, R.string.player_long_press_speed_body,
         extraRes = listOf(R.string.player_long_press_speed_selector),
     ),
     SettingsSearchEntry(
-        R.string.player_double_tap_seek_title, SettingsCategory.PLAYER, R.string.player_double_tap_seek_body,
+        R.string.player_double_tap_seek_title, SettingsCategory.VIEWING, R.string.player_double_tap_seek_body,
         extraRes = listOf(R.string.player_double_tap_seek_selector),
     ),
-    SettingsSearchEntry(R.string.player_auto_hide_selector, SettingsCategory.PLAYER),
+    SettingsSearchEntry(R.string.player_auto_hide_selector, SettingsCategory.VIEWING),
     // One row opens the SponsorBlock page: its options are found through it.
     SettingsSearchEntry(
-        R.string.sponsorblock, SettingsCategory.PLAYER, R.string.sponsorblock_enable_description,
+        R.string.sponsorblock, SettingsCategory.VIEWING, R.string.sponsorblock_enable_description,
         extraRes = listOf(R.string.sponsorblock_enable, R.string.sponsorblock_auto_skip) +
             SponsorBlockCategory.entries.map { it.nameRes },
     ),
-    SettingsSearchEntry(R.string.autoplay_gifs, SettingsCategory.PLAYER, R.string.autoplay_gifs_body),
-    SettingsSearchEntry(R.string.nav_arrows_title, SettingsCategory.PLAYER, R.string.nav_arrows_body),
-    SettingsSearchEntry(R.string.search_files_fullscreen, SettingsCategory.PLAYER, R.string.search_files_fullscreen_body),
+    SettingsSearchEntry(R.string.autoplay_gifs, SettingsCategory.VIEWING, R.string.autoplay_gifs_body),
+    SettingsSearchEntry(R.string.nav_arrows_title, SettingsCategory.VIEWING, R.string.nav_arrows_body),
+    SettingsSearchEntry(R.string.search_files_fullscreen, SettingsCategory.SEARCH, R.string.search_files_fullscreen_body),
     SettingsSearchEntry(
-        R.string.settings_select_style_label, SettingsCategory.PLAYER, R.string.settings_select_style_hint,
+        R.string.settings_select_style_label, SettingsCategory.SELECTION, R.string.settings_select_style_hint,
         titleRes = R.string.settings_select_style_title,
     ),
-    SettingsSearchEntry(R.string.operations_follow_selection_order, SettingsCategory.PLAYER, R.string.operations_follow_selection_order_body),
-    SettingsSearchEntry(R.string.action_cards_order, SettingsCategory.PLAYER, R.string.action_cards_order_desc),
-    // Extra
-    SettingsSearchEntry(R.string.show_foldable_settings_title, SettingsCategory.EXTRA, R.string.show_foldable_settings_body),
-    SettingsSearchEntry(R.string.smart_search_title, SettingsCategory.EXTRA, R.string.smart_search_body),
-    SettingsSearchEntry(R.string.smart_model_import, SettingsCategory.EXTRA, R.string.smart_model_missing),
-    SettingsSearchEntry(R.string.ai_effects_title, SettingsCategory.EXTRA, R.string.ai_effects_body),
+    SettingsSearchEntry(R.string.operations_follow_selection_order, SettingsCategory.SELECTION, R.string.operations_follow_selection_order_body),
+    SettingsSearchEntry(R.string.action_cards_order, SettingsCategory.SELECTION, R.string.action_cards_order_desc),
+    // Search
+    SettingsSearchEntry(R.string.show_foldable_settings_title, SettingsCategory.VIEW, R.string.show_foldable_settings_body),
+    SettingsSearchEntry(R.string.smart_search_title, SettingsCategory.SEARCH, R.string.smart_search_body),
+    SettingsSearchEntry(R.string.smart_model_import, SettingsCategory.SEARCH, R.string.smart_model_missing),
+    SettingsSearchEntry(R.string.ai_effects_title, SettingsCategory.SEARCH, R.string.ai_effects_body),
     SettingsSearchEntry(
         R.string.smart_index_folders_title,
-        SettingsCategory.EXTRA,
+        SettingsCategory.SEARCH,
         R.string.smart_index_folders_body,
         visible = { it.smartSearchEnabled },
     ),
-    // System
-    SettingsSearchEntry(R.string.config_export, SettingsCategory.SYSTEM, R.string.config_export_body),
-    SettingsSearchEntry(R.string.config_import, SettingsCategory.SYSTEM, R.string.config_import_body),
-    SettingsSearchEntry(R.string.rescan, SettingsCategory.SYSTEM, R.string.rescan_body),
-    SettingsSearchEntry(R.string.debug_logging, SettingsCategory.SYSTEM, R.string.debug_logging_body),
-    SettingsSearchEntry(R.string.debug_log_clear, SettingsCategory.SYSTEM, R.string.debug_log_clear_body, visible = { it.debugLogging }),
+    // App
+    SettingsSearchEntry(R.string.duplicates_title, SettingsCategory.APP, R.string.duplicates_body),
+    SettingsSearchEntry(R.string.config_export, SettingsCategory.APP, R.string.config_export_body),
+    SettingsSearchEntry(R.string.config_import, SettingsCategory.APP, R.string.config_import_body),
+    SettingsSearchEntry(R.string.rescan, SettingsCategory.APP, R.string.rescan_body),
+    SettingsSearchEntry(R.string.check_updates_title, SettingsCategory.APP, R.string.check_updates_body),
+    SettingsSearchEntry(R.string.check_updates_now, SettingsCategory.APP),
+    SettingsSearchEntry(R.string.debug_logging, SettingsCategory.APP, R.string.debug_logging_body),
+    SettingsSearchEntry(R.string.debug_log_clear, SettingsCategory.APP, R.string.debug_log_clear_body, visible = { it.debugLogging }),
 )
 
 /** Lower case without accents, so "wyczysc" finds "Wyczyść". */

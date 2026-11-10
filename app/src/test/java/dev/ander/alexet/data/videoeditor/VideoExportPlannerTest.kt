@@ -201,4 +201,28 @@ class VideoExportPlannerTest {
         assertNull(VideoExportPlanner.clipAt(clips, 800L))
         assertEquals(0L, VideoExportPlanner.clipAt(clips, 100L)?.timelineStartMs)
     }
+
+    @Test
+    fun exportLengthCountsGapsBetweenClips() {
+        val clips = listOf(clip(start = 0L, duration = 2000L), clip(start = 5000L, duration = 1000L))
+        assertEquals(6000L, VideoExportPlanner.exportDurationMs(clips))
+    }
+
+    @Test
+    fun estimatedSizeIsVideoAndSoundOverTheLength() {
+        // (1 000 000 + 131 072) b/s x 60 s / 8, plus 1% for the container.
+        assertEquals(8_567_870L, VideoExportPlanner.estimatedSizeBytes(60_000L, 1_000_000))
+        // Sound only.
+        assertEquals(992_870L, VideoExportPlanner.estimatedSizeBytes(60_000L, null))
+        assertEquals(0L, VideoExportPlanner.estimatedSizeBytes(0L, 1_000_000))
+    }
+
+    @Test
+    fun lowerQualityGivesSmallerEstimate() {
+        val high = VideoExportPlanner.estimatedVideoBitrate(1080, 30, 85, ExportQuality.HIGH)
+        val low = VideoExportPlanner.estimatedVideoBitrate(1080, 30, 30, ExportQuality.HIGH)
+        assertTrue(
+            VideoExportPlanner.estimatedSizeBytes(60_000L, low) < VideoExportPlanner.estimatedSizeBytes(60_000L, high),
+        )
+    }
 }

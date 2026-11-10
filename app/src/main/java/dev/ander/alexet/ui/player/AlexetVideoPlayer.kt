@@ -64,8 +64,8 @@ fun AlexetVideoPlayer(
     controlsVisible: Boolean,
     onToggleControls: () -> Unit,
     onBack: () -> Unit,
-    nextPlayerInstalled: Boolean,
-    onPlayInNextPlayer: () -> Unit,
+    externalPlayerAvailable: Boolean,
+    onPlayElsewhere: () -> Unit,
     onShare: () -> Unit,
     onDetails: () -> Unit,
     onEdit: (() -> Unit)? = {},
@@ -99,6 +99,16 @@ fun AlexetVideoPlayer(
         media.absolutePath?.endsWith(dev.ander.alexet.data.SecureFolderManager.ENC_EXTENSION) == true
     }
 
+    // The small window over other apps: the video alone, opened with the player's button.
+    val activity = remember(context) { context.findActivity() }
+    val inPip by PictureInPicture.active.collectAsState()
+    val pipSupported = remember(context) { PictureInPicture.isSupported(context) }
+    val pipButtonShown = config.pipButton && pipSupported && !isAudio && activity != null
+    // Set while the window opens: the pause that comes with it must not stop the video.
+    val pipOpening = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    // Sound after the app is left. Never for private videos: their folder locks with the app.
+    val backgroundAllowed by androidx.compose.runtime.rememberUpdatedState(config.autoBackgroundPlay && !isEncryptedVideo)
+
     // The private folder of this video is open. A lock (app left, folder left) turns it off: the
     // player then drops the video, and its decrypted bytes are wiped, instead of resuming
     // without the password when the app comes back.
@@ -111,12 +121,32 @@ fun AlexetVideoPlayer(
     val exoPlayer = remember(media.id, media.uri) {
         object : androidx.compose.runtime.RememberObserver {
             // Application context: the player may live on in its own threads after the screen.
-            val player: ExoPlayer = ExoPlayer.Builder(context.applicationContext).build().apply {
+            val player: ExoPlayer = ExoPlayer.Builder(context.applicationContext)
+                // Audio focus: other sound pauses while it plays, a call pauses it; unplugged
+                // headphones pause it (it may play on in the background).
+                .setAudioAttributes(
+                    androidx.media3.common.AudioAttributes.Builder()
+                        .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                        .setContentType(
+                            if (media.isAudio) androidx.media3.common.C.AUDIO_CONTENT_TYPE_MUSIC
+                            else androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE,
+                        )
+                        .build(),
+                    true,
+                )
+                .setHandleAudioBecomingNoisy(true)
+                .build().apply {
                 val filePath = media.absolutePath
                 val file = if (filePath != null) java.io.File(filePath) else null
                 val isEnc = file != null && file.name.endsWith(dev.ander.alexet.data.SecureFolderManager.ENC_EXTENSION)
                 if (!isEnc) {
-                    setMediaItem(MediaItem.fromUri(media.uri))
+                    // The title shows in the media notification.
+                    setMediaItem(
+                        MediaItem.Builder()
+                            .setUri(media.uri)
+                            .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder().setTitle(media.displayName).build())
+                            .build(),
+                    )
                     prepare()
                 }
                 // User Requirement: Video does not autoplay immediately
@@ -129,6 +159,7 @@ fun AlexetVideoPlayer(
             private fun doRelease() {
                 if (!released) {
                     released = true
+                    dev.ander.alexet.integration.BackgroundPlayback.stop(context, player)
                     player.clearMediaItems()
                     player.release()
                 }
@@ -237,21 +268,36 @@ fun AlexetVideoPlayer(
 
     // Attach Lifecycle observer
     DisposableEffect(lifecycleOwner, exoPlayer) {
-        // The player works only in the app: once it is left it gives its (hardware) decoder back,
-        // and on return it loads again where it was, paused.
+        // Once the app is left the player gives its (hardware) decoder back, and on return it
+        // loads again where it was, paused. Two exceptions: the small window plays on, and with
+        // background playback a playing video goes on as sound only, with the media notification.
         var stoppedInBackground = false
+        var playingInBackground = false
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_PAUSE -> {
                     savedPositionMs = exoPlayer.currentPosition
-                    exoPlayer.pause()
+                    val toPip = pipOpening.getAndSet(false) || activity?.isInPictureInPictureMode == true
+                    when {
+                        toPip -> Unit
+                        backgroundAllowed && exoPlayer.isPlaying &&
+                            dev.ander.alexet.integration.BackgroundPlayback.start(context, exoPlayer) -> playingInBackground = true
+                        else -> exoPlayer.pause()
+                    }
                 }
                 Lifecycle.Event.ON_STOP -> {
                     savedPositionMs = exoPlayer.currentPosition
-                    exoPlayer.stop()
-                    stoppedInBackground = true
+                    if (playingInBackground) {
+                        // Nobody sees the picture: it is not decoded (battery), only the sound.
+                        exoPlayer.setVideoTrackDisabled(true)
+                    } else {
+                        exoPlayer.stop()
+                        stoppedInBackground = true
+                    }
                 }
-                Lifecycle.Event.ON_START -> if (stoppedInBackground) {
+                Lifecycle.Event.ON_START -> if (playingInBackground) {
+                    exoPlayer.setVideoTrackDisabled(false)
+                } else if (stoppedInBackground) {
                     stoppedInBackground = false
                     // Nothing to load when the video was dropped meanwhile (its folder locked).
                     if (exoPlayer.mediaItemCount > 0) {
@@ -259,12 +305,44 @@ fun AlexetVideoPlayer(
                         exoPlayer.seekTo(savedPositionMs)
                     }
                 }
+                Lifecycle.Event.ON_RESUME -> if (playingInBackground) {
+                    // Back in the app: the notification goes, the video plays on here.
+                    playingInBackground = false
+                    dev.ander.alexet.integration.BackgroundPlayback.stop(context, exoPlayer)
+                }
                 else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+            if (playingInBackground) {
+                exoPlayer.setVideoTrackDisabled(false)
+                dev.ander.alexet.integration.BackgroundPlayback.stop(context, exoPlayer)
+            }
+        }
+    }
+
+    // The small window's play / pause button.
+    if (inPip) {
+        DisposableEffect(exoPlayer) {
+            val receiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: Context, intent: android.content.Intent) {
+                    if (exoPlayer.isPlaying) {
+                        exoPlayer.pause()
+                    } else {
+                        if (playerState.isEnded) exoPlayer.seekTo(0L)
+                        exoPlayer.play()
+                    }
+                }
+            }
+            androidx.core.content.ContextCompat.registerReceiver(
+                context,
+                receiver,
+                android.content.IntentFilter(PictureInPicture.ACTION_PLAY_PAUSE),
+                androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+            onDispose { context.unregisterReceiver(receiver) }
         }
     }
 
@@ -380,6 +458,24 @@ fun AlexetVideoPlayer(
         exoPlayer.addListener(listener)
         onDispose { exoPlayer.removeListener(listener) }
     }
+    // The video's shape as shown (the player turns rotated videos itself).
+    val pipWidth = videoPixels?.let { v -> (v.width * v.pixelWidthHeightRatio).toInt() } ?: 0
+    val pipHeight = videoPixels?.height ?: 0
+    if (pipButtonShown || inPip) {
+        LaunchedEffect(inPip, playerState.isPlaying, pipWidth, pipHeight) {
+            // Ready before the window opens, and kept up to date while it is shown.
+            activity?.setPictureInPictureParams(PictureInPicture.params(context, pipWidth, pipHeight, playerState.isPlaying))
+        }
+    }
+    val enterPip: (() -> Unit)? = if (pipButtonShown) {
+        {
+            pipOpening.set(true)
+            val opened = PictureInPicture.enter(activity, PictureInPicture.params(context, pipWidth, pipHeight, playerState.isPlaying))
+            if (!opened) pipOpening.set(false)
+        }
+    } else {
+        null
+    }
     val scale = playerState.contentScale
     val density = androidx.compose.ui.platform.LocalDensity.current
     val surfaceModifier = when {
@@ -444,175 +540,177 @@ fun AlexetVideoPlayer(
             modifier = surfaceModifier,
         )
 
-        // Gesture detector layer
-        VideoPlayerGestureDetector(
-            playerState = playerState,
-            controlsVisible = controlsVisible,
-            onToggleControls = onToggleControls,
-            config = config,
-            onSeekRelative = { deltaMs ->
-                val dur = exoPlayer.duration
-                val maxPos = if (dur > 0L) dur else Long.MAX_VALUE
-                val newPos = (exoPlayer.currentPosition + deltaMs).coerceIn(0L, maxPos)
-                exoPlayer.seekTo(newPos)
-                playerState.positionMs = newPos
-            },
-            onSetPlaybackSpeedTemporary = { tempSpeed ->
-                val targetSpeed = tempSpeed ?: playerState.playbackSpeed
-                exoPlayer.playbackParameters = PlaybackParameters(targetSpeed)
-            },
-            onTogglePlayPause = {
-                val nowPlaying = !playerState.isPlaying
-                if (playerState.isPlaying) {
-                    exoPlayer.pause()
-                } else {
-                    if (playerState.isEnded) exoPlayer.seekTo(0L)
-                    exoPlayer.play()
-                }
-                playPauseFlash = if (nowPlaying) PlayPauseFlash.PLAY else PlayPauseFlash.PAUSE
-                playPauseFlashKey++
-            },
-            modifier = Modifier.fillMaxSize(),
-        )
-
-        // A double tap in the middle: the new state flashes in the centre.
-        PlayPauseFlashIcon(
-            flash = playPauseFlash,
-            key = playPauseFlashKey,
-            modifier = Modifier.align(Alignment.Center),
-        )
-
-        // Visual Gesture Feedback Indicators
-        playerState.activeDoubleTap?.let { feedback ->
-            DoubleTapSeekBubble(
-                feedback = feedback,
-                modifier = Modifier
-                    .align(if (feedback.side == SeekSide.LEFT) Alignment.CenterStart else Alignment.CenterEnd)
-                    .padding(horizontal = 48.dp),
-            )
-        }
-
-        playerState.activeVerticalGesture?.let { feedback ->
-            VerticalProgressIndicatorView(
-                feedback = feedback,
-                modifier = Modifier
-                    .align(if (feedback.type == VerticalGestureType.BRIGHTNESS) Alignment.CenterStart else Alignment.CenterEnd)
-                    .padding(horizontal = 32.dp),
-            )
-        }
-
-        if (playerState.isLongPressSpeedActive) {
-            LongPressSpeedPill(
-                speed = config.longPressControlsSpeed,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .statusBarsPadding()
-                    .padding(top = 16.dp),
-            )
-        }
-
-        // Full UI Controls Layer
-        AnimatedVisibility(
-            visible = controlsVisible && !playerState.controlsLocked,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            // No dimming layer over the picture while the controls show.
-            Box(
+        if (!inPip) {
+            // Gesture detector layer
+            VideoPlayerGestureDetector(
+                playerState = playerState,
+                controlsVisible = controlsVisible,
+                onToggleControls = onToggleControls,
+                config = config,
+                onSeekRelative = { deltaMs ->
+                    val dur = exoPlayer.duration
+                    val maxPos = if (dur > 0L) dur else Long.MAX_VALUE
+                    val newPos = (exoPlayer.currentPosition + deltaMs).coerceIn(0L, maxPos)
+                    exoPlayer.seekTo(newPos)
+                    playerState.positionMs = newPos
+                },
+                onSetPlaybackSpeedTemporary = { tempSpeed ->
+                    val targetSpeed = tempSpeed ?: playerState.playbackSpeed
+                    exoPlayer.playbackParameters = PlaybackParameters(targetSpeed)
+                },
+                onTogglePlayPause = {
+                    val nowPlaying = !playerState.isPlaying
+                    if (playerState.isPlaying) {
+                        exoPlayer.pause()
+                    } else {
+                        if (playerState.isEnded) exoPlayer.seekTo(0L)
+                        exoPlayer.play()
+                    }
+                    playPauseFlash = if (nowPlaying) PlayPauseFlash.PLAY else PlayPauseFlash.PAUSE
+                    playPauseFlashKey++
+                },
                 modifier = Modifier.fillMaxSize(),
-            ) {
-                VideoPlayerTopControls(
-                    title = media.displayName,
-                    config = config,
-                    contentScale = playerState.contentScale,
-                    playbackSpeed = playerState.playbackSpeed,
-                    isLooping = isLooping,
-                    nextPlayerInstalled = nextPlayerInstalled,
-                    onBack = onBack,
-                    onOpenSpeedSheet = { showSpeedSheet = true },
-                    onOpenScaleSheet = if (isAudio) null else ({ showScaleSheet = true }),
-                    onToggleLoop = {
-                        isLooping = !isLooping
-                        exoPlayer.repeatMode = if (isLooping) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-                    },
-                    onPlayInNextPlayer = if (isAudio) null else onPlayInNextPlayer,
-                    onShare = onShare,
-                    onDetails = onDetails,
-                    onEdit = onEdit,
-                    onCycleAudioTrack = if (trackCounts.first > 1) ({ cycleTrack(exoPlayer, androidx.media3.common.C.TRACK_TYPE_AUDIO, allowOff = false) }) else null,
-                    onCycleSubtitles = if (trackCounts.second > 0) ({ cycleTrack(exoPlayer, androidx.media3.common.C.TRACK_TYPE_TEXT, allowOff = true) }) else null,
-                    belowTitle = topArrow,
-                    modifier = Modifier.align(Alignment.TopCenter),
-                )
+            )
 
-                VideoPlayerCenterControls(
-                    isPlaying = playerState.isPlaying,
-                    isBuffering = playerState.isBuffering,
-                    hasPrevious = hasPrevious,
-                    hasNext = hasNext,
-                    onPlayPause = {
-                        if (playerState.isPlaying) {
-                            exoPlayer.pause()
-                        } else {
-                            if (playerState.isEnded) {
-                                exoPlayer.seekTo(0L)
-                            }
-                            exoPlayer.play()
-                        }
-                    },
-                    onPrevious = onPrevious,
-                    onNext = onNext,
-                    modifier = Modifier.align(Alignment.Center),
-                )
+            // A double tap in the middle: the new state flashes in the centre.
+            PlayPauseFlashIcon(
+                flash = playPauseFlash,
+                key = playPauseFlashKey,
+                modifier = Modifier.align(Alignment.Center),
+            )
 
-                VideoPlayerBottomControls(
-                    playerState = playerState,
-                    config = config,
-                    onSeek = { targetMs ->
-                        exoPlayer.seekTo(targetMs)
-                        playerState.positionMs = targetMs
-                    },
-                    onToggleLock = {
-                        playerState.controlsLocked = !playerState.controlsLocked
-                    },
-                    onOpenScaleSheet = if (isAudio) null else ({ showScaleSheet = true }),
-                    sponsorSegments = shownSegments,
-                    actionCenter = bottomArrow,
-                    modifier = Modifier.align(Alignment.BottomCenter),
+            // Visual Gesture Feedback Indicators
+            playerState.activeDoubleTap?.let { feedback ->
+                DoubleTapSeekBubble(
+                    feedback = feedback,
+                    modifier = Modifier
+                        .align(if (feedback.side == SeekSide.LEFT) Alignment.CenterStart else Alignment.CenterEnd)
+                        .padding(horizontal = 48.dp),
                 )
             }
-        }
 
-        // Playback that reaches the end stops the ticker, so the position alone doesn't show it.
-        currentSegment?.takeIf { !playerState.controlsLocked && !playerState.isEnded }?.let { segment ->
-            SponsorSkipButton(
-                segment = segment,
-                controlsVisible = controlsVisible,
-                onSkip = { exoPlayer.seekTo(segment.endMs.coerceAtMost(exoPlayer.duration)) },
-                modifier = Modifier.align(Alignment.BottomEnd),
-            )
-        }
-
-        // Locked controls single button
-        if (controlsVisible && playerState.controlsLocked) {
-            FilledTonalIconButton(
-                onClick = { playerState.controlsLocked = false },
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .navigationBarsPadding()
-                    .padding(24.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Lock,
-                    contentDescription = null,
+            playerState.activeVerticalGesture?.let { feedback ->
+                VerticalProgressIndicatorView(
+                    feedback = feedback,
+                    modifier = Modifier
+                        .align(if (feedback.type == VerticalGestureType.BRIGHTNESS) Alignment.CenterStart else Alignment.CenterEnd)
+                        .padding(horizontal = 32.dp),
                 )
+            }
+
+            if (playerState.isLongPressSpeedActive) {
+                LongPressSpeedPill(
+                    speed = config.longPressControlsSpeed,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .padding(top = 16.dp),
+                )
+            }
+
+            // Full UI Controls Layer
+            AnimatedVisibility(
+                visible = controlsVisible && !playerState.controlsLocked,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                // No dimming layer over the picture while the controls show.
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    VideoPlayerTopControls(
+                        title = media.displayName,
+                        config = config,
+                        contentScale = playerState.contentScale,
+                        playbackSpeed = playerState.playbackSpeed,
+                        isLooping = isLooping,
+                        onBack = onBack,
+                        onOpenSpeedSheet = { showSpeedSheet = true },
+                        onOpenScaleSheet = if (isAudio) null else ({ showScaleSheet = true }),
+                        onToggleLoop = {
+                            isLooping = !isLooping
+                            exoPlayer.repeatMode = if (isLooping) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+                        },
+                        onPlayElsewhere = if (isAudio || !externalPlayerAvailable) null else onPlayElsewhere,
+                        onShare = onShare,
+                        onDetails = onDetails,
+                        onEdit = onEdit,
+                        onCycleAudioTrack = if (trackCounts.first > 1) ({ cycleTrack(exoPlayer, androidx.media3.common.C.TRACK_TYPE_AUDIO, allowOff = false) }) else null,
+                        onCycleSubtitles = if (trackCounts.second > 0) ({ cycleTrack(exoPlayer, androidx.media3.common.C.TRACK_TYPE_TEXT, allowOff = true) }) else null,
+                        onEnterPip = enterPip,
+                        belowTitle = topArrow,
+                        modifier = Modifier.align(Alignment.TopCenter),
+                    )
+
+                    VideoPlayerCenterControls(
+                        isPlaying = playerState.isPlaying,
+                        isBuffering = playerState.isBuffering,
+                        hasPrevious = hasPrevious,
+                        hasNext = hasNext,
+                        onPlayPause = {
+                            if (playerState.isPlaying) {
+                                exoPlayer.pause()
+                            } else {
+                                if (playerState.isEnded) {
+                                    exoPlayer.seekTo(0L)
+                                }
+                                exoPlayer.play()
+                            }
+                        },
+                        onPrevious = onPrevious,
+                        onNext = onNext,
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+
+                    VideoPlayerBottomControls(
+                        playerState = playerState,
+                        config = config,
+                        onSeek = { targetMs ->
+                            exoPlayer.seekTo(targetMs)
+                            playerState.positionMs = targetMs
+                        },
+                        onToggleLock = {
+                            playerState.controlsLocked = !playerState.controlsLocked
+                        },
+                        onOpenScaleSheet = if (isAudio) null else ({ showScaleSheet = true }),
+                        sponsorSegments = shownSegments,
+                        actionCenter = bottomArrow,
+                        modifier = Modifier.align(Alignment.BottomCenter),
+                    )
+                }
+            }
+
+            // Playback that reaches the end stops the ticker, so the position alone doesn't show it.
+            currentSegment?.takeIf { !playerState.controlsLocked && !playerState.isEnded }?.let { segment ->
+                SponsorSkipButton(
+                    segment = segment,
+                    controlsVisible = controlsVisible,
+                    onSkip = { exoPlayer.seekTo(segment.endMs.coerceAtMost(exoPlayer.duration)) },
+                    modifier = Modifier.align(Alignment.BottomEnd),
+                )
+            }
+
+            // Locked controls single button
+            if (controlsVisible && playerState.controlsLocked) {
+                FilledTonalIconButton(
+                    onClick = { playerState.controlsLocked = false },
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .navigationBarsPadding()
+                        .padding(24.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Lock,
+                        contentDescription = null,
+                    )
+                }
             }
         }
     }
 
     // Modal Overlays
-    if (showSpeedSheet) {
+    if (showSpeedSheet && !inPip) {
         PlaybackSpeedSheet(
             currentSpeed = playerState.playbackSpeed,
             onSelectSpeed = { newSpeed ->
@@ -623,7 +721,7 @@ fun AlexetVideoPlayer(
         )
     }
 
-    if (showScaleSheet) {
+    if (showScaleSheet && !inPip) {
         VideoScaleSheet(
             currentScale = playerState.contentScale,
             onSelectScale = { newScale ->
@@ -705,6 +803,13 @@ private fun cycleTrack(player: androidx.media3.common.Player, type: Int, allowOf
             .setOverrideForType(androidx.media3.common.TrackSelectionOverride(group.mediaTrackGroup, 0))
     }
     player.trackSelectionParameters = builder.build()
+}
+
+/** The picture is not decoded (sound only) while [disabled]. */
+private fun Player.setVideoTrackDisabled(disabled: Boolean) {
+    trackSelectionParameters = trackSelectionParameters.buildUpon()
+        .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_VIDEO, disabled)
+        .build()
 }
 
 /** Largest version 1 private video decrypted into memory for playback. */

@@ -24,8 +24,8 @@ android {
         applicationId = "dev.ander.alexet"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 382
-        versionName = "1.0.0"
+        versionCode = 384
+        versionName = "1.0.2"
     }
 
     buildFeatures {
@@ -63,6 +63,8 @@ android {
             isDebuggable = false
             isMinifyEnabled = true
             isShrinkResources = true
+            // 64-bit ARM phones only: the other ABIs' native libraries (LiteRT) would double the APK.
+            ndk { abiFilters += "arm64-v8a" }
             // Use release keystore when configured, fallback to debug signing for installable local release builds
             signingConfigs.findByName("release")?.let {
                 signingConfig = it
@@ -126,6 +128,8 @@ dependencies {
     implementation(libs.androidx.media3.effect)
     implementation(libs.androidx.media3.muxer)
     implementation(libs.androidx.media3.common)
+    // Media notification and session for videos that go on playing after the app is left.
+    implementation(libs.androidx.media3.session)
     implementation(libs.accompanist.permissions)
     // Archive contents (7z, tar, zip with any name encoding); xz decodes 7z LZMA / LZMA2.
     implementation(libs.commons.compress)

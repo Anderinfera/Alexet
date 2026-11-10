@@ -31,14 +31,19 @@ import dev.ander.alexet.data.videoeditor.ExportFormat
 import dev.ander.alexet.data.videoeditor.ExportQuality
 import dev.ander.alexet.data.videoeditor.ExportResolution
 import dev.ander.alexet.data.videoeditor.VideoExportConfig
+import dev.ander.alexet.data.videoeditor.VideoExportEngine
+import dev.ander.alexet.data.videoeditor.VideoProjectState
+import dev.ander.alexet.ui.gallery.formatFileSize
 
 @Composable
 fun VideoExportDialog(
     initialConfig: VideoExportConfig,
+    project: VideoProjectState,
     onConfirm: (VideoExportConfig) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var config by remember { mutableStateOf(initialConfig.forFormat(initialConfig.format)) }
+    val estimatedBytes = remember(config, project) { VideoExportEngine.estimatedSizeBytes(project, config) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -108,6 +113,16 @@ fun VideoExportDialog(
                             valueRange = 10f..100f,
                             steps = 17, // 5% increments
                         )
+                        if (estimatedBytes != null) {
+                            Text(
+                                stringResource(
+                                    R.string.export_estimated_size,
+                                    formatFileSize(estimatedBytes),
+                                ),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }

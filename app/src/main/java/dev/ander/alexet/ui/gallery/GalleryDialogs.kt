@@ -87,7 +87,7 @@ import dev.ander.alexet.data.SortOrder
 import dev.ander.alexet.data.SortSpec
 import androidx.compose.material3.Checkbox
 
-enum class AlbumPickMode { COPY, MOVE }
+enum class AlbumPickMode { COPY, MOVE, RESTORE }
 
 fun formatFileSize(bytes: Long): String {
     if (bytes <= 0) return "0 B"

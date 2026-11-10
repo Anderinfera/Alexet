@@ -102,6 +102,16 @@ class SmartIndex(val dim: Int) {
         return heap.sortedByDescending { it.score }
     }
 
+    /** A copy of every entry, for work that takes long (the index keeps being updated meanwhile). */
+    @Synchronized
+    fun snapshot(): dev.ander.alexet.data.DuplicateFinder.Embeddings =
+        dev.ander.alexet.data.DuplicateFinder.Embeddings(
+            ids = ids.copyOf(size),
+            vectors = vecs.copyOf(size * dim),
+            scales = scales.copyOf(size),
+            dim = dim,
+        )
+
     private fun ensureCapacity(n: Int) {
         if (n <= ids.size) return
         val cap = maxOf(n, ids.size * 2)

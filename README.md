@@ -4,7 +4,7 @@
 
 Alexet is a gallery app for Android, built with Kotlin and Jetpack Compose. It is made for phones, foldables and tablets alike: on a wide screen the folders and their contents sit side by side, and the layout follows the hinge of a foldable.
 
-Requires Android 8.0 (API 26) or newer.
+Requires Android 8.0 (API 26) or newer on a 64-bit phone (arm64).
 
 ## How to install
 
@@ -20,7 +20,7 @@ You don't need a GitHub account. Do this on your phone:
 **AI search (optional).** It lets you find photos by describing them, for example "dog on the beach". Everything runs on your phone.
 
 1. Open the **[first release (v1.0.0)](https://github.com/Anderinfera/Alexet/releases/tag/v1.0.0)** and under **Assets** download **`siglip2-b16-224.alexetai`** (about 560 MB, Wi-Fi recommended). The model is only there, newer releases have just the app.
-2. In Alexet tap the gear icon at the top to open **Settings**, then **Extra** → **AI search** → **Import AI model** and pick the downloaded file.
+2. In Alexet tap the gear icon at the top to open **Settings**, then **Search** → **AI search** → **Import AI model** and pick the downloaded file.
 3. Alexet then indexes your photos in the background, faster while the phone is charging.
 
 **Updating.** Download the newer `Alexet-release.apk` the same way and install it over the old one. Your settings and folders stay.
@@ -48,6 +48,8 @@ You don't need a GitHub account. Do this on your phone:
 - Share, with optional EXIF removal before sending.
 - Remove EXIF data (GPS, camera model) while keeping the date.
 - Set as wallpaper for the home screen, lock screen or both, with a crop frame for the folded and unfolded screens and device presets.
+- Find duplicates: files with the same content (also under other names) and, with the AI index, photos that look alike (bursts, other resolutions); the extra copies go to the trash.
+- Slideshow widget: photos chosen from any folders, one after another (every 5 s to 1 h); a tap opens the photo.
 
 ### Privacy
 - Private folders: an AES-256-GCM encrypted vault (`.enc`) hidden from the system gallery, unlocked with biometrics or a password, with an optional backup password and password hint.
@@ -63,6 +65,7 @@ You don't need a GitHub account. Do this on your phone:
 - Built-in video player: volume and brightness swipe gestures, hold to speed up, double tap to seek with an adjustable step, playback speed, lock controls, controls auto-hide time.
 - SponsorBlock segments read from chapters saved in the video file, with automatic skipping per category (sponsor, self-promotion, interaction reminder, intro, outro, preview, hook, filler, non-music section) and a Skip button for the others.
 - Audio files play in the built-in player with a Material You vinyl record and equalizer visual.
+- Picture in picture (a button in the player) and background playback with controls in the notification; both can be turned off.
 - Video duration shown as minutes (12:34) or full (0:12:34).
 
 ### Photo editor
@@ -93,6 +96,7 @@ You don't need a GitHub account. Do this on your phone:
 - Light mode that turns off animations on slow phones (offered automatically when the app runs slowly).
 - Sharper thumbnails, thumbnail cache refresh.
 - Export and import of all settings.
+- Update check: once a day Alexet asks GitHub for a new version and installs it on request (can be turned off; the app's only use of the internet).
 - Polish and English.
 
 ## Integrations\*
@@ -102,7 +106,7 @@ You don't need a GitHub account. Do this on your phone:
   - SponsorBlock segments saved in downloaded videos as chapters, skipped in the built-in player.
   - A watched NewPipe folder, so new downloads show up right away.
 - **Anderyer\*** (a Next Player fork)
-  - Opens videos from Alexet in Anderyer.
+  - As the default video player, it gets the folder's videos from Alexet as a playlist.
   - Player settings shared through AnderLine: gestures, seek step, shortcuts, SponsorBlock and more.
 
 \* Requires my port of the app to work.
@@ -117,7 +121,7 @@ You don't need a GitHub account. Do this on your phone:
 
 Alexet to galeria na Androida napisana w Kotlinie i Jetpack Compose. Działa tak samo dobrze na telefonie, składanym telefonie i tablecie: na szerokim ekranie foldery i ich zawartość są obok siebie, a układ dopasowuje się do zawiasu składanego telefonu.
 
-Wymaga Androida 8.0 (API 26) lub nowszego.
+Wymaga Androida 8.0 (API 26) lub nowszego na telefonie 64-bitowym (arm64).
 
 ## Jak zainstalować
 
@@ -133,7 +137,7 @@ Konto na GitHubie nie jest potrzebne. Zrób to na telefonie:
 **Wyszukiwanie AI (opcjonalnie).** Pozwala znaleźć zdjęcia po opisie, np. „pies na plaży”. Wszystko działa na telefonie.
 
 1. Otwórz **[pierwsze wydanie (v1.0.0)](https://github.com/Anderinfera/Alexet/releases/tag/v1.0.0)** i w **Assets** pobierz **`siglip2-b16-224.alexetai`** (ok. 560 MB, najlepiej przez Wi-Fi). Model jest tylko tam, nowsze wydania mają samą aplikację.
-2. W Alexecie dotknij ikony koła zębatego u góry, żeby otworzyć **Ustawienia**, potem **Dodatkowe** → **Wyszukiwanie AI** → **Wgraj model AI** i wybierz pobrany plik.
+2. W Alexecie dotknij ikony koła zębatego u góry, żeby otworzyć **Ustawienia**, potem **Wyszukiwanie** → **Wyszukiwanie AI** → **Wgraj model AI** i wybierz pobrany plik.
 3. Alexet zacznie indeksować zdjęcia w tle, szybciej gdy telefon się ładuje.
 
 **Aktualizacja.** Pobierz nowszy `Alexet-release.apk` tak samo i zainstaluj go na starym. Ustawienia i foldery zostają.
@@ -161,6 +165,8 @@ Konto na GitHubie nie jest potrzebne. Zrób to na telefonie:
 - Udostępnianie z opcjonalnym usuwaniem EXIF przed wysłaniem.
 - Usuwanie danych EXIF (GPS, model aparatu) z zachowaniem daty.
 - Ustawianie tapety na ekranie głównym, blokady lub obu, z kadrowaniem dla ekranu złożonego i rozłożonego oraz gotowymi ustawieniami urządzeń.
+- Szukanie duplikatów: pliki o tej samej zawartości (także pod inną nazwą) oraz, z indeksem AI, zdjęcia, które wyglądają podobnie (serie, inne rozdzielczości); zbędne kopie trafiają do kosza.
+- Widżet „Pokaz slajdów”: zdjęcia wybrane z dowolnych folderów, jedno po drugim (co 5 s do 1 h); dotknięcie otwiera zdjęcie.
 
 ### Prywatność
 - Foldery prywatne: sejf szyfrowany AES-256-GCM (`.enc`) ukryty przed systemową galerią, odblokowywany biometrią lub hasłem, z opcjonalnym hasłem zapasowym i podpowiedzią.
@@ -176,6 +182,7 @@ Konto na GitHubie nie jest potrzebne. Zrób to na telefonie:
 - Wbudowany odtwarzacz wideo: gesty głośności i jasności, przytrzymanie dla przyspieszenia, podwójne dotknięcie do przewijania z regulowanym krokiem, prędkość odtwarzania, blokada sterowania, czas ukrywania przycisków.
 - Segmenty SponsorBlock odczytywane z rozdziałów zapisanych w pliku wideo, z automatycznym pomijaniem dla wybranych kategorii (sponsor, autopromocja, przypomnienie o interakcji, intro, outro, zapowiedź, haczyk, wypełniacz, fragment bez muzyki) i przyciskiem „Pomiń” dla pozostałych.
 - Pliki audio grają we wbudowanym odtwarzaczu z płytą winylową i korektorem w kolorach Material You.
+- Obraz w obrazie (przycisk w odtwarzaczu) i odtwarzanie w tle z przyciskami w powiadomieniu; oba można wyłączyć.
 - Długość filmów w minutach (12:34) albo pełna (0:12:34).
 
 ### Edytor zdjęć
@@ -206,6 +213,7 @@ Konto na GitHubie nie jest potrzebne. Zrób to na telefonie:
 - Tryb lekki, który wyłącza animacje na słabszych telefonach (proponowany automatycznie, gdy aplikacja działa wolno).
 - Ostrzejsze miniatury, odświeżanie pamięci podręcznej miniatur.
 - Eksport i import wszystkich ustawień.
+- Sprawdzanie aktualizacji: raz dziennie Alexet pyta GitHuba o nową wersję i instaluje ją na żądanie (można wyłączyć; to jedyne połączenie aplikacji z internetem).
 - Polski i angielski.
 
 ## Integracje\*
@@ -215,7 +223,7 @@ Konto na GitHubie nie jest potrzebne. Zrób to na telefonie:
   - Segmenty SponsorBlock zapisane w pobranych filmach jako rozdziały i pomijane we wbudowanym odtwarzaczu.
   - Obserwowany folder NewPipe, dzięki czemu nowe pobrania pojawiają się od razu.
 - **Anderyer\*** (fork Next Player)
-  - Otwieranie filmów z Alexeta w Anderyerze.
+  - Jako domyślny odtwarzacz dostaje od Alexeta filmy z folderu jako playlistę.
   - Ustawienia odtwarzacza współdzielone przez AnderLine: gesty, krok przewijania, skróty, SponsorBlock i inne.
 
 \* Wymaga mojego portu aplikacji do działania.

@@ -134,6 +134,12 @@ class MainActivity : FragmentActivity() {
         visibleSince = 0L
     }
 
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: android.content.res.Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        Log.event("Lifecycle") { "pictureInPicture=$isInPictureInPictureMode" }
+        dev.ander.alexet.ui.player.PictureInPicture.onModeChanged(isInPictureInPictureMode)
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         Log.event("Lifecycle") { "onNewIntent ${intent.action} ${intent.data}" }
@@ -191,10 +197,18 @@ class MainActivity : FragmentActivity() {
         Log.event("Intent") { "handle ${intent.action} ${intent.data} flags=0x${Integer.toHexString(intent.flags)}" }
         rememberHandled(intent)
         when {
+            // A finished quick edit's notification: the gallery at the file's folder.
+            intent.action == dev.ander.alexet.integration.ExportService.ACTION_SHOW_FOLDER -> {
+                val folderId = intent.getLongExtra(dev.ander.alexet.integration.ExportService.EXTRA_FOLDER_ID, Long.MIN_VALUE)
+                if (folderId != Long.MIN_VALUE) viewModel.requestShowFolder(folderId)
+            }
             intent.action == Intent.ACTION_EDIT -> intent.data?.let {
                 viewModel.editUri(it, wasOnScreenAt = visibleSpans())
             }
-            intent.action == Intent.ACTION_VIEW || intent.data != null -> intent.data?.let(viewModel::openUri)
+            intent.action == Intent.ACTION_VIEW || intent.data != null -> intent.data?.let {
+                // A photo of a hidden folder tapped on the slideshow widget comes renamed.
+                viewModel.openUri(dev.ander.alexet.widget.SlideshowWidget.openedUri(it))
+            }
             else -> return
         }
         // Handled once: a later recreate must not open the same file again.

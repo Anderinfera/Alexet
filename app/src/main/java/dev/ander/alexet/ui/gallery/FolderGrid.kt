@@ -299,7 +299,8 @@ private fun LazyGridItemScope.FolderTile(
     Box(
         modifier = Modifier
             .aspectRatio(1f)
-            .then(if (LocalLightMode.current) Modifier else Modifier.animateItem())
+            // The edge between the panes moves: the tile follows it as it is, no own glide.
+            .then(if (LocalLightMode.current || LocalPaneResizing.current.value) Modifier else Modifier.animateItem())
             .zIndex(if (hovered || pulseAlpha > 0.01f) 2f else 0f)
             .graphicsLayer {
                 val currentScale = maxOf(hoverScale, 1f + 0.06f * pulseAlpha) * stampedScale
@@ -465,9 +466,14 @@ fun FolderCover(
             val epoch = LocalFolderThumbEpoch.current
             val bump = LocalFolderCoverBumps.current[album.id] ?: 0
             val generation = if (bump > 0) bump else epoch
-            val cacheKey = "thumb-${cover.id}-${cover.dateModifiedMs}"
+            // The newest file being made by a quick edit has no picture yet: the cover shows its
+            // original's, as the file's tile does.
+            val shown = LocalQuickEditTile.current
+                ?.takeIf { it.target.outputPath != null && it.matches(cover) }
+                ?.target?.source ?: cover
+            val cacheKey = "thumb-${shown.id}-${shown.dateModifiedMs}"
             MediaThumbnail(
-                media = cover,
+                media = shown,
                 modifier = Modifier.fillMaxSize(),
                 showPlayIcon = false,
                 showDuration = false,
@@ -503,6 +509,8 @@ fun FolderCover(
                     ),
                 ),
         )
+        // Light mode: the names without their blurred shadow (the dark band under them stays).
+        val textShadows = !LocalLightMode.current
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
@@ -517,7 +525,7 @@ fun FolderCover(
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.titleSmall.copy(
                     color = Color.White,
-                    shadow = Shadow(
+                    shadow = if (!textShadows) null else Shadow(
                         color = Color.Black.copy(alpha = 0.55f),
                         offset = Offset(0f, 1f),
                         blurRadius = 4f,
@@ -531,7 +539,7 @@ fun FolderCover(
                 maxLines = 1,
                 style = MaterialTheme.typography.bodySmall.copy(
                     color = Color.White.copy(alpha = 0.92f),
-                    shadow = Shadow(
+                    shadow = if (!textShadows) null else Shadow(
                         color = Color.Black.copy(alpha = 0.5f),
                         offset = Offset(0f, 1f),
                         blurRadius = 3f,

@@ -57,6 +57,33 @@ object VideoExportPlanner {
         return scaled.coerceIn(250_000, 50_000_000)
     }
 
+    /** Bitrate of the AAC sound the export writes (the encoder's default: none is asked for). */
+    const val AUDIO_BITRATE = 131_072
+
+    /** What the container adds to the video and sound. */
+    private const val CONTAINER_OVERHEAD = 1.01
+
+    /** Length of the exported video: the clips one after another, with the gaps between them. */
+    fun exportDurationMs(clips: List<VideoClipItem>): Long =
+        planClipSequence(clips).sumOf { it.durationMs }
+
+    /**
+     * The video bitrate that makes [durationMs] of export about [targetBytes] (the reverse of
+     * [estimatedSizeBytes]), within what encoders take.
+     */
+    fun videoBitrateForSize(targetBytes: Long, durationMs: Long): Int {
+        val seconds = durationMs.coerceAtLeast(1L) / 1000.0
+        val total = targetBytes.coerceAtLeast(0L) * 8.0 / CONTAINER_OVERHEAD / seconds
+        return (total - AUDIO_BITRATE).toLong().coerceIn(250_000L, 100_000_000L).toInt()
+    }
+
+    /** About how many bytes [durationMs] of export takes: video at [videoBitrate] (null: sound only) and sound. */
+    fun estimatedSizeBytes(durationMs: Long, videoBitrate: Int?): Long {
+        val seconds = durationMs.coerceAtLeast(0L) / 1000.0
+        val bitsPerSecond = (videoBitrate ?: 0).toLong() + AUDIO_BITRATE
+        return (bitsPerSecond * seconds / 8.0 * CONTAINER_OVERHEAD).toLong()
+    }
+
     fun panToNdc(panPx: Float, referenceHalfSize: Float = 540f): Float {
         val half = referenceHalfSize.coerceAtLeast(1f)
         return (panPx / half).coerceIn(-4f, 4f)

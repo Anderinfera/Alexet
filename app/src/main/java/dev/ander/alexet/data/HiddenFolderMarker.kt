@@ -56,11 +56,35 @@ internal object HiddenFolderMarker {
     /** [rows] with every row in a hidden folder of [index] marked hidden (the same row objects otherwise). */
     fun mark(rows: List<GalleryMedia>, index: Index): List<GalleryMedia> {
         if (index.isEmpty) return rows
-        return rows.map { markRow(it, index) }
+        // The rows of one folder get the same answer: worked out once per folder (its relative
+        // path and the parent of its files' path), not trimmed and lowercased again for each row.
+        val byFolder = HashMap<String, Any>()
+        return rows.map { item ->
+            val path = item.absolutePath
+            val parent = if (path == null) "" else path.substring(0, path.lastIndexOf('/').coerceAtLeast(0))
+            val folderKey = item.relativePath + '\u0000' + parent
+            val found = byFolder.getOrPut(folderKey) { hiddenFolderOf(item, index) ?: NOT_HIDDEN }
+            if (found === NOT_HIDDEN) item else markedAs(item, found as String)
+        }
     }
+
+    private val NOT_HIDDEN = Any()
 
     /** [item] marked hidden when it lies in a hidden folder of [index], else [item] itself. */
     fun markRow(item: GalleryMedia, index: Index): GalleryMedia {
+        val key = hiddenFolderOf(item, index) ?: return item
+        return markedAs(item, key)
+    }
+
+    private fun markedAs(item: GalleryMedia, key: String): GalleryMedia = item.copy(
+        isHidden = true,
+        bucketId = NomediaScanner.syntheticBucketId(key),
+        bucketName = key.substringAfterLast('/').ifBlank { item.bucketName },
+        relativePath = "$key/",
+    )
+
+    /** The hidden folder of [index] (as written) that [item] lies in; null when none. */
+    private fun hiddenFolderOf(item: GalleryMedia, index: Index): String? {
         val itemRel = item.relativePath.trim().trim('/').lowercase()
         // Anchored at the volume root: a hidden "Movies/" must not catch "DCIM/Movies/".
         val itemAbsRel = item.absolutePath?.let(::volumeRelative).orEmpty().lowercase()
@@ -73,13 +97,7 @@ internal object HiddenFolderMarker {
         }
         forEachFolderOf(itemRel, includeSelf = true, consider)
         if (itemAbsRel.isNotEmpty()) forEachFolderOf(itemAbsRel, includeSelf = false, consider)
-        val key = best?.second ?: return item
-        return item.copy(
-            isHidden = true,
-            bucketId = NomediaScanner.syntheticBucketId(key),
-            bucketName = key.substringAfterLast('/').ifBlank { item.bucketName },
-            relativePath = "$key/",
-        )
+        return best?.second
     }
 
     /**
@@ -114,8 +132,8 @@ internal object HiddenFolderMarker {
                 sigKey in seen ||
                 item.storagePath.lowercase() in seen
             !isDuplicate &&
-                !item.storagePath.contains(".alexet_trash", ignoreCase = true) &&
-                !item.relativePath.contains(".alexet_trash", ignoreCase = true) &&
+                !hasTrashMarker(item.storagePath) &&
+                !hasTrashMarker(item.relativePath) &&
                 !item.bucketName.equals(".alexet_trash", ignoreCase = true) &&
                 item.bucketId != AlbumIds.TRASH
         }

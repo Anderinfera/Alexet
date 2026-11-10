@@ -3,12 +3,16 @@
     xmlns:tools="http://schemas.android.com/tools"
     tools:ignore="MissingLeanbackLauncher">
 
+    <!-- Only to ask GitHub for a newer release and download it (Settings → App, can be turned off). -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Deleting whole folders goes on after the app is left (FolderDeleteService). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- A video or song goes on playing after the app is left (PlaybackService). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.SET_WALLPAPER" />
     <!-- An APK shown with "See all files" opens in the system installer. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
@@ -54,6 +58,11 @@
             <category android:name="android.intent.category.DEFAULT" />
             <data android:mimeType="video/*" />
         </intent>
+        <!-- Players that take only files given by address (most of them). -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="content" android:mimeType="video/*" />
+        </intent>
     </queries>
 
     <application
@@ -76,6 +85,7 @@
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density|keyboard|keyboardHidden|fontScale|locale|layoutDirection|fontWeightAdjustment"
             android:exported="true"
             android:resizeableActivity="true"
+            android:supportsPictureInPicture="true"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -124,6 +134,40 @@
             android:name=".integration.ExportService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Slideshow widget: chosen photos one after another on the home screen. -->
+        <receiver
+            android:name=".widget.SlideshowWidget"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/slideshow_widget_info" />
+        </receiver>
+
+        <service
+            android:name=".widget.SlideshowWidgetService"
+            android:exported="false"
+            android:permission="android.permission.BIND_REMOTEVIEWS" />
+
+        <activity
+            android:name=".widget.SlideshowWidgetConfigActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:label="@string/slideshow_widget_title"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Alexet">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".integration.PlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

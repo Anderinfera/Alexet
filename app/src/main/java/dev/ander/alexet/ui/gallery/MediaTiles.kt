@@ -716,6 +716,8 @@ fun MediaTiles(
                     androidx.compose.runtime.derivedStateOf { DownloadTracker.lookup(activeDownloads(), item.absolutePath) }
                 }
                 val downloading = download != null
+                // The edge between the panes moves: the tile follows it as it is, no own glide.
+                val paneResizing = LocalPaneResizing.current.value
                 val selectScale by animateFloatAsState(
                     targetValue = if (selected && !contentOrderMode) 0.92f else 1f,
                     animationSpec = spring(
@@ -729,7 +731,7 @@ fun MediaTiles(
                     modifier = Modifier
                         .then(
                             when {
-                                marqueeActive || isDraggingItem -> Modifier
+                                marqueeActive || isDraggingItem || paneResizing -> Modifier
                                 LocalLightMode.current -> Modifier
                                 else -> Modifier.animateItem(
                                     placementSpec = spring(
@@ -795,16 +797,21 @@ fun MediaTiles(
                         ),
                 ) {
                     Box {
+                        // Where a quick edit is making a video: the forge over the tile, no play icon or
+                        // time under it; a copy not made yet shows its original's picture.
+                        val forge = LocalQuickEditTile.current?.takeIf { it.matches(item) }
                         SquareThumbnail(
-                            media = item,
-                            showPlayIcon = !contentOrderMode && !downloading,
+                            media = if (forge?.target?.outputPath != null) forge.target.source else item,
+                            showPlayIcon = !contentOrderMode && !downloading && forge == null,
                             thumbGeneration = LocalFolderThumbEpoch.current,
                             skipLoad = downloading,
+                            showDuration = forge == null,
                         )
                         DownloadTileOverlay(
                             download = download,
                             modifier = Modifier.matchParentSize(),
                         )
+                        forge?.let { tile -> QuickEditForgeOverlay(tile, Modifier.matchParentSize()) }
                         if (contentOrderMode && orderNumber != null) {
                             Box(
                                 modifier = Modifier

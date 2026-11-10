@@ -81,11 +81,13 @@ class MediaIndexStore(context: Context) {
                 out.ensureCapacity(c.count)
                 while (c.moveToNext()) {
                     val parsed = runCatching { Uri.parse(c.getString(uri)) }.getOrNull() ?: continue
+                    val displayName = c.getString(name).orEmpty()
                     out += GalleryMedia(
                         id = c.getLong(id),
                         uri = parsed,
-                        displayName = c.getString(name).orEmpty(),
-                        mimeType = c.getString(mime).orEmpty(),
+                        displayName = displayName,
+                        // Also for files saved before wrong system types were corrected.
+                        mimeType = NomediaScanner.mediaMimeOf(c.getString(mime), displayName).orEmpty(),
                         dateTakenMs = c.getLong(taken),
                         dateModifiedMs = c.getLong(modified),
                         dateAddedMs = c.getLong(added),

@@ -23,6 +23,22 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
+private const val TRASH_MARKER = ".alexet_trash"
+
+/**
+ * Whether [text] contains ".alexet_trash" in any letter case: the same as
+ * `contains(".alexet_trash", ignoreCase = true)`, compared only where a '.' stands (the library's
+ * lists ask this of every row, and the full case-insensitive search was a large part of a sync).
+ */
+fun hasTrashMarker(text: String): Boolean {
+    var i = text.indexOf('.')
+    while (i >= 0 && i + TRASH_MARKER.length <= text.length) {
+        if (text.regionMatches(i, TRASH_MARKER, 0, TRASH_MARKER.length, ignoreCase = true)) return true
+        i = text.indexOf('.', i + 1)
+    }
+    return false
+}
+
 fun TrashedItem.toJson(): JSONObject = JSONObject().apply {
     put("id", id)
     put("originalUriString", originalUriString)
@@ -541,14 +557,22 @@ class TrashManager(private val context: Context) {
         }.onFailure { AppLog.w("TrashManager", "Could not write the trash journal: ${it.message}") }
     }
 
-    private fun restoreOne(item: TrashedItem): Pair<File, Boolean>? {
+    /**
+     * Puts [item] back where it was, or into [targetDir] when one is given ([targetRelativePath]
+     * is that folder's MediaStore path, for the fallback that inserts a row).
+     */
+    private fun restoreOne(item: TrashedItem, targetDir: File? = null, targetRelativePath: String? = null): Pair<File, Boolean>? {
         val trashFile = File(item.trashFilePath)
         if (!isUnderTrashRoot(trashFile)) {
             dev.ander.alexet.data.AppLog.w("TrashManager", "Skip restore: trash path outside trash root: ${item.trashFilePath}")
             return null
         }
         if (!trashFile.exists()) return null
-        val original = File(item.originalPath)
+        val original = if (targetDir != null) {
+            File(targetDir, File(item.originalPath).name.ifBlank { item.displayName })
+        } else {
+            File(item.originalPath)
+        }
         val extRoot = Environment.getExternalStorageDirectory()
         // Any mounted storage volume (internal or SD card), not only the primary one.
         val volumeRoots = buildList {
@@ -559,7 +583,7 @@ class TrashManager(private val context: Context) {
             }
         }.mapNotNull { runCatching { it.canonicalPath }.getOrNull() }.distinct()
         val originalCanonical = runCatching { original.canonicalPath }.getOrNull()
-        val isSafePath = !item.originalPath.contains("..") && originalCanonical != null &&
+        val isSafePath = !original.path.contains("..") && originalCanonical != null &&
             volumeRoots.any { root -> originalCanonical.startsWith("$root/") }
         val effectiveOriginal = if (isSafePath) {
             original
@@ -595,7 +619,7 @@ class TrashManager(private val context: Context) {
                 val values = android.content.ContentValues().apply {
                     put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, destFile.name)
                     put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime)
-                    val rel = item.originalRelativePath.ifBlank { if (item.isVideo) "Movies" else "Pictures" }
+                    val rel = (targetRelativePath ?: item.originalRelativePath).ifBlank { if (item.isVideo) "Movies" else "Pictures" }
                     put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, rel)
                     put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
                 }
@@ -665,21 +689,30 @@ class TrashManager(private val context: Context) {
         return if (!file.exists() || file.delete()) true else false
     }
 
-    suspend fun restore(itemsToRestore: List<TrashedItem>): List<File> = mutex.withLock {
+    /** Restores where the files were, or all into [targetDir] (MediaStore path [targetRelativePath]). */
+    suspend fun restore(
+        itemsToRestore: List<TrashedItem>,
+        targetDir: File? = null,
+        targetRelativePath: String? = null,
+    ): List<File> = mutex.withLock {
         withContext(Dispatchers.IO) {
             ensureLoadedLocked()
-            restoreInternal(itemsToRestore)
+            restoreInternal(itemsToRestore, targetDir, targetRelativePath)
         }
     }
 
-    private fun restoreInternal(itemsToRestore: List<TrashedItem>): List<File> {
+    private fun restoreInternal(
+        itemsToRestore: List<TrashedItem>,
+        targetDir: File? = null,
+        targetRelativePath: String? = null,
+    ): List<File> {
         if (itemsToRestore.isEmpty()) return emptyList()
         val current = _indexedItems.value.toMutableList()
         val restoredFiles = ArrayList<File>()
         val restoredIds = HashSet<Long>()
 
         for (item in itemsToRestore) {
-            val result = restoreOne(item) ?: continue
+            val result = restoreOne(item, targetDir, targetRelativePath) ?: continue
             restoredFiles += result.first
             restoredIds += item.id
         }

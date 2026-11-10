@@ -1,0 +1,324 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hammer striking an anvil with a short burst of sparks. Loops every 1.2 s.
+     Shown on the tile of a video being quick-edited (light grey; only the sparks have colour). -->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt">
+
+    <aapt:attr name="android:drawable">
+        <vector
+            android:width="96dp"
+            android:height="96dp"
+            android:viewportWidth="96"
+            android:viewportHeight="96">
+
+            <!-- The drawing sits right of and below the middle: moved to the middle here, the shapes
+                 and motion as drawn (raised, the hammer still stays inside). -->
+            <group
+                android:name="forge"
+                android:translateX="-3"
+                android:translateY="-8">
+
+                <!-- Sparks: hidden until the hammer lands -->
+                <path
+                    android:name="spark1"
+                    android:pathData="M 35,56 L 17,38"
+                    android:strokeAlpha="0"
+                    android:strokeColor="#FFE082"
+                    android:strokeLineCap="round"
+                    android:strokeWidth="2.2" />
+                <path
+                    android:name="spark2"
+                    android:pathData="M 34,57 L 12,50"
+                    android:strokeAlpha="0"
+                    android:strokeColor="#FFC107"
+                    android:strokeLineCap="round"
+                    android:strokeWidth="2" />
+                <path
+                    android:name="spark3"
+                    android:pathData="M 36,55 L 28,31"
+                    android:strokeAlpha="0"
+                    android:strokeColor="#FFD54F"
+                    android:strokeLineCap="round"
+                    android:strokeWidth="2" />
+                <path
+                    android:name="spark4"
+                    android:pathData="M 51,57 L 74,53"
+                    android:strokeAlpha="0"
+                    android:strokeColor="#FF9800"
+                    android:strokeLineCap="round"
+                    android:strokeWidth="2" />
+                <path
+                    android:name="spark5"
+                    android:pathData="M 50,55 L 64,33"
+                    android:strokeAlpha="0"
+                    android:strokeColor="#FFB300"
+                    android:strokeLineCap="round"
+                    android:strokeWidth="2.2" />
+
+                <!-- Anvil: horn on the left, narrow waist, wide foot -->
+                <path
+                    android:name="anvil"
+                    android:fillColor="#DDDDDD"
+                    android:pathData="M 10,59 L 34,58 L 86,58 L 86,65 L 70,67 C 66,70 64,74 64,78 L 76,84 L 80,92 L 64,92 Q 56,86 48,92 L 32,92 L 36,84 L 48,78 C 48,73 45,69 40,68 C 28,67 18,64 10,59 Z" />
+
+                <!-- Hammer: swings around the end of the handle -->
+                <group
+                    android:name="hammer"
+                    android:pivotX="92"
+                    android:pivotY="47">
+                    <path
+                        android:fillColor="#DDDDDD"
+                        android:pathData="M 90,44.5 L 43,44.5 L 43,49.5 L 90,49.5 Q 92.5,49.5 92.5,47 Q 92.5,44.5 90,44.5 Z" />
+                    <path
+                        android:fillColor="#DDDDDD"
+                        android:pathData="M 50,58 L 36,58 L 36,50 L 38,48 L 38,40 L 40,36 L 46,36 L 48,40 L 48,48 L 50,50 Z" />
+                </group>
+            </group>
+        </vector>
+    </aapt:attr>
+
+    <!-- Lift, hold, strike, small bounce, rest -->
+    <target android:name="hammer">
+        <aapt:attr name="android:animation">
+            <objectAnimator
+                android:duration="1200"
+                android:interpolator="@android:interpolator/linear"
+                android:repeatCount="infinite">
+                <propertyValuesHolder
+                    android:propertyName="rotation"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="0.0" />
+                    <keyframe
+                        android:fraction="0.40"
+                        android:interpolator="@android:interpolator/fast_out_slow_in"
+                        android:value="32.0" />
+                    <keyframe android:fraction="0.50" android:value="32.0" />
+                    <keyframe
+                        android:fraction="0.62"
+                        android:interpolator="@android:interpolator/accelerate_cubic"
+                        android:value="0.0" />
+                    <keyframe
+                        android:fraction="0.67"
+                        android:interpolator="@android:interpolator/decelerate_quad"
+                        android:value="4.0" />
+                    <keyframe
+                        android:fraction="0.73"
+                        android:interpolator="@android:interpolator/accelerate_quad"
+                        android:value="0.0" />
+                    <keyframe android:fraction="1" android:value="0.0" />
+                </propertyValuesHolder>
+            </objectAnimator>
+        </aapt:attr>
+    </target>
+
+    <!-- Each spark: a short segment that flies outward from the impact and fades -->
+    <target android:name="spark1">
+        <aapt:attr name="android:animation">
+            <objectAnimator
+                android:duration="1200"
+                android:interpolator="@android:interpolator/linear"
+                android:repeatCount="infinite">
+                <propertyValuesHolder
+                    android:propertyName="strokeAlpha"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="0.0" />
+                    <keyframe android:fraction="0.619" android:value="0.0" />
+                    <keyframe android:fraction="0.62" android:value="1.0" />
+                    <keyframe android:fraction="0.76" android:value="1.0" />
+                    <keyframe android:fraction="0.84" android:value="0.0" />
+                    <keyframe android:fraction="1" android:value="0.0" />
+                </propertyValuesHolder>
+                <propertyValuesHolder
+                    android:propertyName="trimPathEnd"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="0.0" />
+                    <keyframe android:fraction="0.62" android:value="0.0" />
+                    <keyframe
+                        android:fraction="0.80"
+                        android:interpolator="@android:interpolator/decelerate_quad"
+                        android:value="1.0" />
+                    <keyframe android:fraction="1" android:value="1.0" />
+                </propertyValuesHolder>
+                <propertyValuesHolder
+                    android:propertyName="trimPathStart"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="0.0" />
+                    <keyframe android:fraction="0.66" android:value="0.0" />
+                    <keyframe
+                        android:fraction="0.84"
+                        android:interpolator="@android:interpolator/decelerate_quad"
+                        android:value="1.0" />
+                    <keyframe android:fraction="1" android:value="1.0" />
+                </propertyValuesHolder>
+            </objectAnimator>
+        </aapt:attr>
+    </target>
+
+    <target android:name="spark2">
+        <aapt:attr name="android:animation">
+            <objectAnimator
+                android:duration="1200"
+                android:interpolator="@android:interpolator/linear"
+                android:repeatCount="infinite">
+                <propertyValuesHolder
+                    android:propertyName="strokeAlpha"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="0.0" />
+                    <keyframe android:fraction="0.619" android:value="0.0" />
+                    <keyframe android:fraction="0.62" android:value="1.0" />
+                    <keyframe android:fraction="0.73" android:value="1.0" />
+                    <keyframe android:fraction="0.81" android:value="0.0" />
+                    <keyframe android:fraction="1" android:value="0.0" />
+                </propertyValuesHolder>
+                <propertyValuesHolder
+                    android:propertyName="trimPathEnd"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="0.0" />
+                    <keyframe android:fraction="0.62" android:value="0.0" />
+                    <keyframe
+                        android:fraction="0.77"
+                        android:interpolator="@android:interpolator/decelerate_quad"
+                        android:value="1.0" />
+                    <keyframe android:fraction="1" android:value="1.0" />
+                </propertyValuesHolder>
+                <propertyValuesHolder
+                    android:propertyName="trimPathStart"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="0.0" />
+                    <keyframe android:fraction="0.65" android:value="0.0" />
+                    <keyframe
+                        android:fraction="0.81"
+                        android:interpolator="@android:interpolator/decelerate_quad"
+                        android:value="1.0" />
+                    <keyframe android:fraction="1" android:value="1.0" />
+                </propertyValuesHolder>
+            </objectAnimator>
+        </aapt:attr>
+    </target>
+
+    <target android:name="spark3">
+        <aapt:attr name="android:animation">
+            <objectAnimator
+                android:duration="1200"
+                android:interpolator="@android:interpolator/linear"
+                android:repeatCount="infinite">
+                <propertyValuesHolder
+                    android:propertyName="strokeAlpha"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="0.0" />
+                    <keyframe android:fraction="0.619" android:value="0.0" />
+                    <keyframe android:fraction="0.62" android:value="1.0" />
+                    <keyframe android:fraction="0.80" android:value="1.0" />
+                    <keyframe android:fraction="0.88" android:value="0.0" />
+                    <keyframe android:fraction="1" android:value="0.0" />
+                </propertyValuesHolder>
+                <propertyValuesHolder
+                    android:propertyName="trimPathEnd"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="0.0" />
+                    <keyframe android:fraction="0.62" android:value="0.0" />
+                    <keyframe
+                        android:fraction="0.84"
+                        android:interpolator="@android:interpolator/decelerate_quad"
+                        android:value="1.0" />
+                    <keyframe android:fraction="1" android:value="1.0" />
+                </propertyValuesHolder>
+                <propertyValuesHolder
+                    android:propertyName="trimPathStart"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="0.0" />
+                    <keyframe android:fraction="0.67" android:value="0.0" />
+                    <keyframe
+                        android:fraction="0.88"
+                        android:interpolator="@android:interpolator/decelerate_quad"
+                        android:value="1.0" />
+                    <keyframe android:fraction="1" android:value="1.0" />
+                </propertyValuesHolder>
+            </objectAnimator>
+        </aapt:attr>
+    </target>
+
+    <target android:name="spark4">
+        <aapt:attr name="android:animation">
+            <objectAnimator
+                android:duration="1200"
+                android:interpolator="@android:interpolator/linear"
+                android:repeatCount="infinite">
+                <propertyValuesHolder
+                    android:propertyName="strokeAlpha"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="0.0" />
+                    <keyframe android:fraction="0.619" android:value="0.0" />
+                    <keyframe android:fraction="0.62" android:value="1.0" />
+                    <keyframe android:fraction="0.75" android:value="1.0" />
+                    <keyframe android:fraction="0.83" android:value="0.0" />
+                    <keyframe android:fraction="1" android:value="0.0" />
+                </propertyValuesHolder>
+                <propertyValuesHolder
+                    android:propertyName="trimPathEnd"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="0.0" />
+                    <keyframe android:fraction="0.62" android:value="0.0" />
+                    <keyframe
+                        android:fraction="0.79"
+                        android:interpolator="@android:interpolator/decelerate_quad"
+                        android:value="1.0" />
+                    <keyframe android:fraction="1" android:value="1.0" />
+                </propertyValuesHolder>
+                <propertyValuesHolder
+                    android:propertyName="trimPathStart"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="0.0" />
+                    <keyframe android:fraction="0.66" android:value="0.0" />
+                    <keyframe
+                        android:fraction="0.83"
+                        android:interpolator="@android:interpolator/decelerate_quad"
+                        android:value="1.0" />
+                    <keyframe android:fraction="1" android:value="1.0" />
+                </propertyValuesHolder>
+            </objectAnimator>
+        </aapt:attr>
+    </target>
+
+    <target android:name="spark5">
+        <aapt:attr name="android:animation">
+            <objectAnimator
+                android:duration="1200"
+                android:interpolator="@android:interpolator/linear"
+                android:repeatCount="infinite">
+                <propertyValuesHolder
+                    android:propertyName="strokeAlpha"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="0.0" />
+                    <keyframe android:fraction="0.619" android:value="0.0" />
+                    <keyframe android:fraction="0.62" android:value="1.0" />
+                    <keyframe android:fraction="0.78" android:value="1.0" />
+                    <keyframe android:fraction="0.86" android:value="0.0" />
+                    <keyframe android:fraction="1" android:value="0.0" />
+                </propertyValuesHolder>
+                <propertyValuesHolder
+                    android:propertyName="trimPathEnd"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="0.0" />
+                    <keyframe android:fraction="0.62" android:value="0.0" />
+                    <keyframe
+                        android:fraction="0.82"
+                        android:interpolator="@android:interpolator/decelerate_quad"
+                        android:value="1.0" />
+                    <keyframe android:fraction="1" android:value="1.0" />
+                </propertyValuesHolder>
+                <propertyValuesHolder
+                    android:propertyName="trimPathStart"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="0.0" />
+                    <keyframe android:fraction="0.67" android:value="0.0" />
+                    <keyframe
+                        android:fraction="0.86"
+                        android:interpolator="@android:interpolator/decelerate_quad"
+                        android:value="1.0" />
+                    <keyframe android:fraction="1" android:value="1.0" />
+                </propertyValuesHolder>
+            </objectAnimator>
+        </aapt:attr>
+    </target>
+</animated-vector>

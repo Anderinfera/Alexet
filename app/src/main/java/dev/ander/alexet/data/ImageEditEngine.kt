@@ -139,6 +139,9 @@ enum class ExportResult { SAVED, OUT_OF_MEMORY, FAILED }
 
 object ImageEditEngine {
 
+    /** JPEG / WebP quality of the editor's saves. */
+    const val EDITOR_QUALITY = 95
+
     /** Encoder chosen from the MIME type when known (external URIs may lack an extension). */
     fun encoderExtensionFor(fileName: String, mimeType: String?): String = when (mimeType?.lowercase()) {
         "image/png" -> "png"
@@ -1219,6 +1222,10 @@ object ImageEditEngine {
         webpLossless: Boolean = false,
         /** The result replaces the original (overwrite): its location stays with it. */
         keepLocation: Boolean = false,
+        /** JPEG / WebP quality (quick edit compresses; the editor keeps [EDITOR_QUALITY]). */
+        quality: Int = EDITOR_QUALITY,
+        /** Share of each side kept (quick edit fitting a file size). */
+        scale: Float = 1f,
     ): ExportResult = withContext(Dispatchers.IO) {
         var finalBitmap: Bitmap? = null
         try {
@@ -1226,7 +1233,16 @@ object ImageEditEngine {
             val sourceBitmap = decodeForExport(context, sourceFile, sourceUri) ?: return@withContext ExportResult.FAILED
 
             // 2-6. Crop, geometry, effects, colour and the layers on top.
-            finalBitmap = renderEdits(context, sourceBitmap, editState)
+            val rendered = renderEdits(context, sourceBitmap, editState)
+            finalBitmap = rendered
+            if (scale < 0.999f) {
+                // Same rounding as QuickPhotoEncoder, so the size shown is the size saved.
+                val w = (rendered.width * scale).roundToInt().coerceAtLeast(1)
+                val h = (rendered.height * scale).roundToInt().coerceAtLeast(1)
+                val smaller = Bitmap.createScaledBitmap(rendered, w, h, true)
+                if (smaller != rendered) rendered.recycle()
+                finalBitmap = smaller
+            }
 
             // 7. Compress and save
             destinationFile.parentFile?.mkdirs()
@@ -1246,7 +1262,7 @@ object ImageEditEngine {
             // compress() reports a failed encode (full disk, WebP side over 16383 px) by returning
             // false and leaves a partial file: the caller would then overwrite the original with it.
             val written = FileOutputStream(destinationFile).use { out ->
-                finalBitmap.compress(format, if (webpLossless) 100 else 95, out).also { ok ->
+                finalBitmap.compress(format, if (webpLossless) 100 else quality.coerceIn(1, 100), out).also { ok ->
                     if (ok) {
                         out.flush()
                         runCatching { out.fd.sync() }

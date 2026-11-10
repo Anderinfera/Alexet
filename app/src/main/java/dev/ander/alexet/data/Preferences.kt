@@ -121,7 +121,9 @@ data class AppSettings(
     val firstTimeOpened: Int = 0,
     val autoFoldSplitEnabled: Boolean = true,
     val foldSplitAngleThreshold: Float = 20f,
-    /** "Extra view" settings (two panels) shown without a foldable ("Extra" card); fold-only ones stay hidden. */
+    /** "Dynamic edge": 50/50 while the content pane is empty, [panelSplitPercent] once a folder is shown. Off in [lightMode]. */
+    val dynamicSplit: Boolean = true,
+    /** "Extra view" settings (two panels) shown without a foldable (switch in the "View" card); fold-only ones stay hidden. */
     val showFoldableSettings: Boolean = false,
     /** A hinge or a fold was seen on this device: its settings are shown. Device-local, not exported. */
     val foldableDetected: Boolean = false,
@@ -129,6 +131,8 @@ data class AppSettings(
     val newpipeFolderRelativePath: String = "",
     /** Imported file references waiting for their files to appear on this phone. */
     val pendingMedia: PendingMediaRefs = PendingMediaRefs(),
+    /** Once a day at start, Alexet asks GitHub for a newer release (the only use of the internet). */
+    val checkUpdates: Boolean = true,
     /** In-app debug log (see AppLog); device-local, not exported. */
     val debugLogging: Boolean = false,
     /** Text search of photos with the imported AI model (smart search). */
@@ -160,6 +164,7 @@ data class AppSettings(
             SelectionAction.MOVE,
             SelectionAction.RENAME,
             SelectionAction.EDIT,
+            SelectionAction.QUICK_EDIT,
             SelectionAction.COPY,
             SelectionAction.SELECT_ALL,
             SelectionAction.HIDE,

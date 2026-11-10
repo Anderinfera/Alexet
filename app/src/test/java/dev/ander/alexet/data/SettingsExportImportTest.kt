@@ -110,6 +110,7 @@ class SettingsExportImportTest {
             playerScreenOrientation = "LANDSCAPE",
             disableAutoPipOnHome = false,
             autoBackgroundPlay = false,
+            pipButton = false,
             showPlayerOnLaunch = false,
             themeConfig = "OFF",
             autoResumeAfterSettings = false,
@@ -136,6 +137,8 @@ class SettingsExportImportTest {
         lightMode = true,
         autoFoldSplitEnabled = false,
         foldSplitAngleThreshold = 33f,
+        dynamicSplit = false,
+        checkUpdates = false,
         newpipeFolderRelativePath = "Gallery/Downloaded-NP",
         smartSearchEnabled = true,
         aiEffects = AiEffectsConfig(

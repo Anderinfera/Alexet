@@ -37,6 +37,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.MoreVert
@@ -51,6 +52,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -160,11 +162,12 @@ import androidx.compose.runtime.snapshotFlow
 fun ViewerPane(
     media: List<GalleryMedia>,
     selected: GalleryMedia,
-    nextPlayerInstalled: Boolean,
+    externalPlayerAvailable: Boolean,
     onSelect: (GalleryMedia) -> Unit,
     onClose: () -> Unit,
     onDelete: (GalleryMedia) -> Unit = {},
     onEdit: (GalleryMedia) -> Unit = {},
+    onQuickEdit: (GalleryMedia) -> Unit = {},
     onPlayVideo: (GalleryMedia) -> Unit,
     onShare: (GalleryMedia) -> Unit,
     onSetAs: (GalleryMedia) -> Unit = {},
@@ -236,7 +239,9 @@ fun ViewerPane(
     val current = remember(pagerState.settledPage, effectiveMedia) {
         effectiveMedia.getOrNull(pagerState.settledPage) ?: selected
     }
-    val chromeVisible = showChrome
+    // In the small window over other apps the video shows alone.
+    val inPictureInPicture by dev.ander.alexet.ui.player.PictureInPicture.active.collectAsState()
+    val chromeVisible = showChrome && !inPictureInPicture
     val gifPlayingStates = remember { mutableStateMapOf<Long, Boolean>() }
 
     LaunchedEffect(pagerState.settledPage, effectiveMedia) {
@@ -344,7 +349,7 @@ fun ViewerPane(
                     }
                 },
                 onClose = onClose,
-                nextPlayerInstalled = nextPlayerInstalled,
+                externalPlayerAvailable = externalPlayerAvailable,
                 onPlayVideo = onPlayVideo,
                 onShare = onShare,
                 onEdit = onEdit,
@@ -427,6 +432,16 @@ fun ViewerPane(
                                         },
                                         leadingIcon = { Icon(Icons.Rounded.Edit, contentDescription = null) },
                                     )
+                                    if (dev.ander.alexet.data.QuickEdit.supports(current)) {
+                                        DropdownMenuItem(
+                                            text = { Text(stringResource(R.string.quick_edit)) },
+                                            onClick = {
+                                                menu = false
+                                                onQuickEdit(current)
+                                            },
+                                            leadingIcon = { Icon(Icons.Rounded.Bolt, contentDescription = null) },
+                                        )
+                                    }
                                     if (!current.isVideo) {
                                         DropdownMenuItem(
                                             text = { Text(stringResource(R.string.set_as)) },
@@ -761,7 +776,7 @@ private fun MediaPager(
     onToggleChrome: () -> Unit,
     onCoverZoom: (Boolean) -> Unit,
     onClose: () -> Unit,
-    nextPlayerInstalled: Boolean,
+    externalPlayerAvailable: Boolean,
     onPlayVideo: (GalleryMedia) -> Unit,
     onShare: (GalleryMedia) -> Unit,
     onEdit: (GalleryMedia) -> Unit,
@@ -809,8 +824,8 @@ private fun MediaPager(
                     controlsVisible = controlsVisible,
                     onToggleControls = onToggleChrome,
                     onBack = onClose,
-                    nextPlayerInstalled = nextPlayerInstalled,
-                    onPlayInNextPlayer = { onPlayVideo(item) },
+                    externalPlayerAvailable = externalPlayerAvailable,
+                    onPlayElsewhere = { onPlayVideo(item) },
                     onShare = { onShare(item) },
                     onDetails = onShowDetails,
                     onEdit = if (item.isAudio) null else ({ onEdit(item) }),

@@ -57,7 +57,10 @@ data class AnderLineConfig(
     val enableBrightnessSwipeGesture: Boolean = true,
     val playerScreenOrientation: String = "PORTRAIT",
     val disableAutoPipOnHome: Boolean = true,
+    /** Alexet's player: a video goes on playing (sound only) after the app is left or the screen goes off. */
     val autoBackgroundPlay: Boolean = true,
+    /** Alexet's player: a button that shrinks the video into a small window over other apps. */
+    val pipButton: Boolean = true,
     val showPlayerOnLaunch: Boolean = true,
     val themeConfig: String = "ON",
     val autoResumeAfterSettings: Boolean = true,
@@ -127,6 +130,7 @@ object AnderLineClient {
             put("playerScreenOrientation", config.playerScreenOrientation)
             put("disableAutoPipOnHome", config.disableAutoPipOnHome)
             put("autoBackgroundPlay", config.autoBackgroundPlay)
+            put("pipButton", config.pipButton)
             put("showPlayerOnLaunch", config.showPlayerOnLaunch)
             put("enableVolumeSwipeGesture", config.enableVolumeSwipeGesture)
             put("enableBrightnessSwipeGesture", config.enableBrightnessSwipeGesture)
@@ -162,6 +166,7 @@ object AnderLineClient {
             val orientation = playerObj.optString("playerScreenOrientation", root.optString("playerScreenOrientation", f.playerScreenOrientation))
             val disablePip = playerObj.optBoolean("disableAutoPipOnHome", root.optBoolean("disableAutoPipOnHome", f.disableAutoPipOnHome))
             val autoBg = playerObj.optBoolean("autoBackgroundPlay", root.optBoolean("autoBackgroundPlay", f.autoBackgroundPlay))
+            val pipButton = playerObj.optBoolean("pipButton", root.optBoolean("pipButton", f.pipButton))
             val showOnLaunch = playerObj.optBoolean("showPlayerOnLaunch", root.optBoolean("showPlayerOnLaunch", f.showPlayerOnLaunch))
             val theme = appObj.optString("themeConfig", root.optString("themeConfig", f.themeConfig))
             val autoResume = playerObj.optBoolean("autoResumeAfterSettings", root.optBoolean("autoResumeAfterSettings", f.autoResumeAfterSettings))
@@ -197,6 +202,7 @@ object AnderLineClient {
                 playerScreenOrientation = orientation,
                 disableAutoPipOnHome = disablePip,
                 autoBackgroundPlay = autoBg,
+                pipButton = pipButton,
                 showPlayerOnLaunch = showOnLaunch,
                 themeConfig = theme,
                 autoResumeAfterSettings = autoResume,

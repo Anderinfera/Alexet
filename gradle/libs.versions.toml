@@ -64,6 +64,7 @@ androidx-media3-transformer = { group = "androidx.media3", name = "media3-transf
 androidx-media3-effect = { group = "androidx.media3", name = "media3-effect", version.ref = "androidxMedia3" }
 androidx-media3-muxer = { group = "androidx.media3", name = "media3-muxer", version.ref = "androidxMedia3" }
 androidx-media3-common = { group = "androidx.media3", name = "media3-common", version.ref = "androidxMedia3" }
+androidx-media3-session = { group = "androidx.media3", name = "media3-session", version.ref = "androidxMedia3" }
 androidx-window = { group = "androidx.window", name = "window", version.ref = "androidxWindow" }
 androidx-window-core = { group = "androidx.window", name = "window-core", version.ref = "androidxWindow" }
 coil-compose = { group = "io.coil-kt.coil3", name = "coil-compose", version.ref = "coil" }

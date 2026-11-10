@@ -68,8 +68,9 @@ import dev.ander.alexet.data.remapHiddenAlbumIds
 import dev.ander.alexet.data.findCoverMedia
 import dev.ander.alexet.data.sortMedia
 import dev.ander.alexet.data.usesFolderDrag
-import dev.ander.alexet.integration.NextPlayerClient
+import dev.ander.alexet.integration.ExternalPlayer
 import java.io.File
+import dev.ander.alexet.data.DuplicateFinder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
@@ -140,7 +141,7 @@ data class GalleryUiState(
     val viewerMediaId: Long? = null,
     val externalMedia: GalleryMedia? = null,
     val isLoading: Boolean = true,
-    val nextPlayerInstalled: Boolean = false,
+    val externalPlayerAvailable: Boolean = false,
     val randomSeed: Long = 1L,
     val revealHidden: Boolean = false,
     val hasHidden: Boolean = false,
@@ -185,14 +186,14 @@ data class GalleryUiState(
             contentFolderId == AlbumIds.TRASH ||
             (selectedFileIds.isNotEmpty() && selectedFiles.any {
                 it.bucketId == AlbumIds.TRASH ||
-                it.absolutePath?.contains(".alexet_trash", ignoreCase = true) == true ||
+                it.absolutePath?.let { dev.ander.alexet.data.hasTrashMarker(it) } == true ||
                 it.bucketName.equals(".alexet_trash", ignoreCase = true) ||
                 trashedItems.any { t -> t.id == it.id }
             }) ||
             (viewerMediaId != null && (
                 trashedItems.any { it.id == viewerMediaId } ||
                 viewerMedia?.bucketId == AlbumIds.TRASH ||
-                viewerMedia?.absolutePath?.contains(".alexet_trash", ignoreCase = true) == true ||
+                viewerMedia?.absolutePath?.let { dev.ander.alexet.data.hasTrashMarker(it) } == true ||
                 viewerMedia?.bucketName?.equals(".alexet_trash", ignoreCase = true) == true
             ))
 
@@ -735,6 +736,117 @@ class GalleryViewModel(
     fun requestWriteConsent(sender: android.content.IntentSender) = requestConsent(sender, ConsentKind.WRITE)
 
     fun requestDeleteConsent(sender: android.content.IntentSender) = requestConsent(sender, ConsentKind.DELETE)
+
+    /** The duplicates search of Settings → App. */
+    sealed interface DuplicateScan {
+        data object Idle : DuplicateScan
+        data class Running(val progress: Float) : DuplicateScan
+        /** [usedAi]: photos that look alike were searched too (an AI index exists). */
+        data class Done(
+            val groups: List<DuplicateFinder.Group>,
+            val usedAi: Boolean,
+            /** Which search this is (the choices made on its results stay while it is shown). */
+            val scanId: Long = System.nanoTime(),
+        ) : DuplicateScan
+    }
+
+    private val _duplicateScan = MutableStateFlow<DuplicateScan>(DuplicateScan.Idle)
+    val duplicateScan: StateFlow<DuplicateScan> = _duplicateScan.asStateFlow()
+    private var duplicateJob: Job? = null
+
+    /** Searches the whole library (in the background; leaving the settings does not stop it). */
+    fun findDuplicates() {
+        if (duplicateJob?.isActive == true) return
+        AppLog.event("Action") { "findDuplicates" }
+        _duplicateScan.value = DuplicateScan.Running(0f)
+        val context = getApplication<Application>()
+        duplicateJob = viewModelScope.launch {
+            val state = uiState.value
+            val media = state.allCandidateMedia
+            val embeddings = if (state.settings.smartSearchEnabled) {
+                runCatching { smartSearch.embeddings() }.getOrNull()
+            } else {
+                null
+            }
+            var shown = 0f
+            val groups = DuplicateFinder.find(media, open = { openForReading(context, it) }, embeddings) { p ->
+                // A step every percent: no flood of updates from the workers.
+                if (p - shown >= 0.01f || p >= 1f) {
+                    shown = p
+                    _duplicateScan.value = DuplicateScan.Running(p)
+                }
+            }
+            AppLog.event("Action") { "findDuplicates groups=${groups.size} ai=${embeddings != null}" }
+            _duplicateScan.value = DuplicateScan.Done(groups, usedAi = embeddings != null)
+        }
+    }
+
+    fun cancelDuplicates() {
+        duplicateJob?.cancel()
+        duplicateJob = null
+        _duplicateScan.value = DuplicateScan.Idle
+    }
+
+    /** The chosen copies go to the trash; the groups keep what is left. */
+    fun trashDuplicates(ids: Set<Long>) {
+        val done = _duplicateScan.value as? DuplicateScan.Done ?: return
+        val items = excludeDownloading(done.groups.flatMap { it.items }.filter { it.id in ids }.distinctBy { it.id })
+        if (items.isEmpty()) return
+        AppLog.event("Action") { "trashDuplicates count=${items.size}" }
+        val itemIds = items.mapTo(HashSet()) { it.id }
+        repository.markPendingDeletes(items)
+        moveItemsToTrash(items, itemIds, ::requestDeleteConsent)
+        _duplicateScan.value = done.copy(
+            groups = done.groups.mapNotNull { group ->
+                group.items.filterNot { it.id in itemIds }
+                    .takeIf { it.size > 1 }
+                    ?.let { DuplicateFinder.Group(it, group.identical) }
+            },
+        )
+    }
+
+    // ------------------------------------------------------------------ updates
+
+    val updateState: StateFlow<dev.ander.alexet.integration.AppUpdates.State> = dev.ander.alexet.integration.AppUpdates.state
+    val updateCardShown: StateFlow<Boolean> = dev.ander.alexet.integration.AppUpdates.cardShown
+
+    init {
+        // A while after start (the library loads first), at most once a day.
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(UPDATE_CHECK_DELAY_MS)
+            if (store.settings.value.checkUpdates) dev.ander.alexet.integration.AppUpdates.checkIfDue(getApplication())
+        }
+    }
+
+    fun setCheckUpdates(enabled: Boolean) {
+        store.setCheckUpdates(enabled)
+    }
+
+    fun checkUpdatesNow() {
+        viewModelScope.launch { dev.ander.alexet.integration.AppUpdates.checkNow(getApplication()) }
+    }
+
+    fun installUpdate() {
+        val release = when (val s = dev.ander.alexet.integration.AppUpdates.state.value) {
+            is dev.ander.alexet.integration.AppUpdates.State.Available -> s.release
+            is dev.ander.alexet.integration.AppUpdates.State.Failed -> s.release
+            else -> null
+        } ?: return
+        viewModelScope.launch { dev.ander.alexet.integration.AppUpdates.downloadAndInstall(getApplication(), release) }
+    }
+
+    fun closeUpdateCard() {
+        dev.ander.alexet.integration.AppUpdates.closeCard(getApplication())
+    }
+
+    /** A file's bytes: straight from the disk where it can, else through the system. */
+    private fun openForReading(context: Context, media: GalleryMedia): java.io.InputStream? {
+        media.absolutePath?.let { path ->
+            val file = File(path)
+            if (file.canRead()) return file.inputStream()
+        }
+        return context.contentResolver.openInputStream(media.uri)
+    }
 
     /** Shows [sender] now, or after the consent dialog that is open. */
     private fun requestConsent(sender: android.content.IntentSender, kind: ConsentKind) {
@@ -1312,7 +1424,7 @@ class GalleryViewModel(
             cachedViewerMedia = lastActiveViewerMedia,
             externalMedia = ix.externalMedia,
             isLoading = (sync.isScanning || ix.loading) && (visible.isEmpty() || albums.isEmpty()),
-            nextPlayerInstalled = NextPlayerClient.isInstalled(getApplication()),
+            externalPlayerAvailable = ExternalPlayer.isAvailable(getApplication()),
             randomSeed = ix.randomSeed,
             revealHidden = ix.revealHidden,
             hasHidden = processed.hasHidden,
@@ -2184,6 +2296,10 @@ class GalleryViewModel(
 
     fun setAutoFoldSplitEnabled(enabled: Boolean) {
         store.setAutoFoldSplitEnabled(enabled)
+    }
+
+    fun setDynamicSplit(enabled: Boolean) {
+        store.setDynamicSplit(enabled)
     }
 
     fun setFoldSplitAngleThreshold(threshold: Float) {
@@ -3184,11 +3300,14 @@ class GalleryViewModel(
             return
         }
         if (blockIfDownloading(item)) return
+        if (blockIfQuickEditing(item)) return
         if (item.isOtherFile && !item.isAudio) {
             // ZIP, 7Z, TAR, RAR: their contents in a window; other files in a matching app.
             if (dev.ander.alexet.data.ArchiveReader.formatOf(item.displayName) != null) openArchive(item) else openOtherFile(item)
             return
         }
+        // Decoding starts now, while the viewer is being built.
+        dev.ander.alexet.ui.components.ViewerPrefetch.start(getApplication(), item, viewModelScope)
         lastActiveViewerMedia = item
         interaction.update { it.copy(viewerMediaId = item.id) }
     }
@@ -3554,8 +3673,9 @@ class GalleryViewModel(
         )
     }
 
-    fun playInNextPlayer(context: Context, media: GalleryMedia): Boolean {
+    fun playExternally(context: Context, media: GalleryMedia): Boolean {
         if (blockIfDownloading(media)) return false
+        if (blockIfQuickEditing(media)) return false
         if (media.absolutePath?.endsWith(SecureFolderManager.ENC_EXTENSION) == true) {
             openMedia(media)
             return true
@@ -3569,14 +3689,11 @@ class GalleryViewModel(
             uiState.value.phoneFolderId != AlbumIds.NONE -> uiState.value.visibleFilesIn(uiState.value.phoneFolderId).filter { it.isVideo }
             else -> uiState.value.visibleFilesIn(media.bucketId).filter { it.isVideo }
         }
-        val ok = NextPlayerClient.play(context, media, playlist)
+        val ok = ExternalPlayer.play(context, media, playlist)
         if (!ok) {
             lastExternalPlayId = 0L
-            if (!NextPlayerClient.isInstalled(context)) {
-                Toast.makeText(context, R.string.next_player_missing, Toast.LENGTH_LONG).show()
-            } else {
-                openMedia(media)
-            }
+            // No other app plays videos: Alexet's own player does.
+            openMedia(media)
         }
         return ok
     }
@@ -4000,6 +4117,8 @@ class GalleryViewModel(
 
     fun setShowHidden(value: Boolean) {
         store.update { it.copy(showHidden = value) }
+        // Hidden folders' photos on the slideshow widget follow the switch.
+        runCatching { dev.ander.alexet.widget.SlideshowWidget.refreshAll(getApplication()) }
         if (value) {
             interaction.update { it.copy(revealHidden = false) }
             // Turned on by hand: asked again even when it was refused earlier in this run.
@@ -4911,8 +5030,25 @@ class GalleryViewModel(
         }
     }
 
-    fun restoreSelectedTrash() {
-        AppLog.event("Action") { "restoreSelectedTrash " + "selected=${uiState.value.selectionCount}" }
+    fun restoreSelectedTrash() = restoreTrash(target = null)
+
+    /** The selected trashed files go into [albumId]'s folder instead of where they were. */
+    fun restoreSelectedTrashTo(albumId: Long) {
+        val album = resolveAlbum(albumId) ?: return
+        if (album.isSecure) {
+            toast(R.string.cannot_move_to_secure_folder)
+            return
+        }
+        restoreTrash(album)
+    }
+
+    /** The selected trashed files go into a folder picked in the system's file picker. */
+    fun restoreSelectedTrashToTree(treeUri: Uri) {
+        restoreTrash(repository.destinationFromTree(treeUri, uiState.value.allAlbums).album)
+    }
+
+    private fun restoreTrash(target: Album?) {
+        AppLog.event("Action") { "restoreSelectedTrash " + "selected=${uiState.value.selectionCount} toFolder=${target != null}" }
         val state = uiState.value
         val selectedIds = state.selectedFileIds
         val toRestore = state.trashedItems.filter { it.id in selectedIds }
@@ -4920,7 +5056,14 @@ class GalleryViewModel(
         trashManager.markPendingDelete(toRestore.map { it.id })
         clearSelection()
         viewModelScope.launch(fileOperationErrors(R.string.restore_failed) { trashManager.unmarkPendingDelete(toRestore.map { it.id }) }) {
-            val restored = trashManager.restore(toRestore)
+            val targetDir = target?.let { album -> withContext(Dispatchers.IO) { repository.folderDirectory(album) } }
+            if (target != null && targetDir == null) {
+                // The picked folder is not on the disk: nothing is moved anywhere else instead.
+                trashManager.unmarkPendingDelete(toRestore.map { it.id })
+                toast(R.string.restore_failed)
+                return@launch
+            }
+            val restored = trashManager.restore(toRestore, targetDir, target?.relativePath)
             // The delete mask set when they were trashed would hide the restored rows (and the
             // sync would then record them as seen): lift it for everything restored.
             repository.unmarkPendingDeletes(toRestore.map { it.id })
@@ -4958,7 +5101,7 @@ class GalleryViewModel(
         }
         val isTrashedItem = uiState.value.inTrash ||
             item.bucketId == AlbumIds.TRASH ||
-            item.absolutePath?.contains(".alexet_trash", ignoreCase = true) == true ||
+            item.absolutePath?.let { dev.ander.alexet.data.hasTrashMarker(it) } == true ||
             item.bucketName.equals(".alexet_trash", ignoreCase = true) ||
             uiState.value.trashedItems.any { it.id == item.id }
 
@@ -5142,7 +5285,7 @@ class GalleryViewModel(
         val trashedInSelection = uiState.value.trashedItems.filter { it.id in uiState.value.selectedFileIds }
         val directTrashFiles = uiState.value.selectedFiles.filter {
             it.bucketId == AlbumIds.TRASH ||
-            it.absolutePath?.contains(".alexet_trash", ignoreCase = true) == true ||
+            it.absolutePath?.let { dev.ander.alexet.data.hasTrashMarker(it) } == true ||
             it.bucketName.equals(".alexet_trash", ignoreCase = true)
         }
 
@@ -5211,66 +5354,78 @@ class GalleryViewModel(
                 repository.requestRefresh()
             }
         } else {
-            viewModelScope.launch(fileOperationErrors(R.string.move_failed) { repository.unmarkPendingDeletes(itemIds) }) {
-                val trashed = trashManager.moveToTrash(items) { repository.fileForMedia(it) }
-                val trashedIds = trashed.map { it.id }.toSet()
-                val failedIds = itemIds - trashedIds
-                if (failedIds.isNotEmpty()) {
-                    repository.unmarkPendingDeletes(failedIds)
+            moveItemsToTrash(items, itemIds, launchDelete)
+        }
+    }
+
+    /**
+     * [items] (already marked as pending deletes) go to the trash; the system asks first where it
+     * has to (files of other apps).
+     */
+    private fun moveItemsToTrash(
+        items: List<GalleryMedia>,
+        itemIds: Set<Long>,
+        launchDelete: (android.content.IntentSender) -> Unit,
+    ) {
+        viewModelScope.launch(fileOperationErrors(R.string.move_failed) { repository.unmarkPendingDeletes(itemIds) }) {
+            val trashed = trashManager.moveToTrash(items) { repository.fileForMedia(it) }
+            val trashedIds = trashed.map { it.id }.toSet()
+            val failedIds = itemIds - trashedIds
+            if (failedIds.isNotEmpty()) {
+                repository.unmarkPendingDeletes(failedIds)
+            }
+            if (trashedIds.isNotEmpty()) {
+                // Always try MediaStore delete for trashed items (incl. sourceRemoved) to drop orphans.
+                val storeAll = items.filter { it.id in trashedIds && it.uri.scheme == "content" }
+                if (storeAll.isNotEmpty()) {
+                    repository.deleteDirect(storeAll)
+                } else {
+                    val direct = items.filter { it.id in trashedIds && it.absolutePath != null }
+                    if (direct.isNotEmpty()) repository.deleteDirect(direct)
                 }
-                if (trashedIds.isNotEmpty()) {
-                    // Always try MediaStore delete for trashed items (incl. sourceRemoved) to drop orphans.
-                    val storeAll = items.filter { it.id in trashedIds && it.uri.scheme == "content" }
-                    if (storeAll.isNotEmpty()) {
-                        repository.deleteDirect(storeAll)
-                    } else {
-                        val direct = items.filter { it.id in trashedIds && it.absolutePath != null }
-                        if (direct.isNotEmpty()) repository.deleteDirect(direct)
+                val stillNeedConfirm = trashed.filter { itemT ->
+                    val media = items.firstOrNull { it.id == itemT.id }
+                    media != null && media.uri.scheme == "content" && !itemT.sourceRemoved
+                }
+                val storeItems = items.filter { media ->
+                    stillNeedConfirm.any { it.id == media.id } && media.uri.scheme == "content"
+                }
+                if (storeItems.isNotEmpty()) {
+                    val sender = repository.createDeleteRequest(storeItems)
+                    if (sender != null) {
+                        // Only SAF-waiting items go into rollback — not the whole successful batch.
+                        pendingTrashRollback = stillNeedConfirm
+                        pendingDeleteRollbackIds = storeItems.map { it.id }.toSet()
+                        pendingAfterDelete = {
+                            pendingTrashRollback = null
+                            pendingDeleteRollbackIds = null
+                            viewModelScope.launch { repository.requestRefresh() }
+                        }
+                        toast(R.string.moved_to_trash_count, trashed.size)
+                        launchDelete(sender)
+                        return@launch
                     }
-                    val stillNeedConfirm = trashed.filter { itemT ->
-                        val media = items.firstOrNull { it.id == itemT.id }
-                        media != null && media.uri.scheme == "content" && !itemT.sourceRemoved
-                    }
-                    val storeItems = items.filter { media ->
-                        stillNeedConfirm.any { it.id == media.id } && media.uri.scheme == "content"
-                    }
-                    if (storeItems.isNotEmpty()) {
-                        val sender = repository.createDeleteRequest(storeItems)
-                        if (sender != null) {
-                            // Only SAF-waiting items go into rollback — not the whole successful batch.
-                            pendingTrashRollback = stillNeedConfirm
-                            pendingDeleteRollbackIds = storeItems.map { it.id }.toSet()
-                            pendingAfterDelete = {
+                    repository.deleteDirect(storeItems)
+                    val recoverable = repository.takeRecoverableSender()
+                    if (recoverable != null) {
+                        pendingTrashRollback = stillNeedConfirm
+                        pendingDeleteRollbackIds = storeItems.map { it.id }.toSet()
+                        pendingAfterDelete = {
+                            viewModelScope.launch {
+                                repository.deleteDirect(storeItems)
                                 pendingTrashRollback = null
                                 pendingDeleteRollbackIds = null
-                                viewModelScope.launch { repository.requestRefresh() }
+                                repository.requestRefresh()
                             }
-                            toast(R.string.moved_to_trash_count, trashed.size)
-                            launchDelete(sender)
-                            return@launch
                         }
-                        repository.deleteDirect(storeItems)
-                        val recoverable = repository.takeRecoverableSender()
-                        if (recoverable != null) {
-                            pendingTrashRollback = stillNeedConfirm
-                            pendingDeleteRollbackIds = storeItems.map { it.id }.toSet()
-                            pendingAfterDelete = {
-                                viewModelScope.launch {
-                                    repository.deleteDirect(storeItems)
-                                    pendingTrashRollback = null
-                                    pendingDeleteRollbackIds = null
-                                    repository.requestRefresh()
-                                }
-                            }
-                            toast(R.string.moved_to_trash_count, trashed.size)
-                            launchDelete(recoverable)
-                            return@launch
-                        }
+                        toast(R.string.moved_to_trash_count, trashed.size)
+                        launchDelete(recoverable)
+                        return@launch
                     }
-                    toast(R.string.moved_to_trash_count, trashed.size)
                 }
-                repository.requestRefresh()
+                toast(R.string.moved_to_trash_count, trashed.size)
             }
+            repository.requestRefresh()
         }
     }
 
@@ -5742,22 +5897,36 @@ class GalleryViewModel(
         ImageEditEngine.clearCaches()
     }
 
+    /**
+     * Saves the photo open in the editor, or quick edit's [target] with its [quality] and [scale].
+     * [onFinished] gets whether it was saved. False when it did not start (another save runs).
+     */
     fun saveEditedImage(
         editState: ImageEditState,
         overwriteRequested: Boolean,
         launchDelete: ((android.content.IntentSender) -> Unit)? = null,
-    ) {
-        AppLog.event("Action") { "saveEditedImage overwrite=$overwriteRequested media=${_editingMedia.value?.id}" }
-        val media = _editingMedia.value ?: return
-        if (_isSavingEdit.value) return
+        target: GalleryMedia? = null,
+        quality: Int = ImageEditEngine.EDITOR_QUALITY,
+        scale: Float = 1f,
+        onFinished: ((Boolean) -> Unit)? = null,
+    ): Boolean {
+        AppLog.event("Action") { "saveEditedImage overwrite=$overwriteRequested media=${(target ?: _editingMedia.value)?.id} quick=${target != null}" }
+        val media = target ?: _editingMedia.value ?: return false
+        if (_isSavingEdit.value) return false
         _isSavingEdit.value = true
 
         viewModelScope.launch {
             val app = getApplication<Application>()
+            var savedResult = false
             // A GIF stays an animated GIF: every frame gets the edits.
             val isGif = media.mimeType.equals("image/gif", ignoreCase = true) ||
                 media.displayName.endsWith(".gif", ignoreCase = true)
-            val ext = if (isGif) "gif" else ImageEditEngine.encoderExtensionFor(media.displayName, media.mimeType)
+            val ext = when {
+                isGif -> "gif"
+                // Quick edit: a PNG has no quality, a compressed one is saved as JPG.
+                target != null -> dev.ander.alexet.data.QuickEdit.photoExtension(media, quality)
+                else -> ImageEditEngine.encoderExtensionFor(media.displayName, media.mimeType)
+            }
             // In place only when the encoder (chosen by content type) writes what the name says:
             // a PNG named .jpg must not get PNG bytes under its .jpg name.
             val canOverwriteInPlace = if (isGif) {
@@ -5811,103 +5980,14 @@ class GalleryViewModel(
                         editState = editState,
                         webpLossless = webpKind == ImageEditEngine.WebpKind.LOSSLESS,
                         keepLocation = overwrite && canOverwriteInPlace,
+                        quality = quality,
+                        scale = scale,
                     )
                 }
 
                 if (exportResult == dev.ander.alexet.data.ExportResult.SAVED && tempImageFile.exists() && tempImageFile.length() > 0L) {
                     val saved = if (overwrite && canOverwriteInPlace) {
-                        // Not cancellable: once the file is replaced, the list, the thumbnails and
-                        // the toast below must follow (a cancel left the old date and thumbnail).
-                        val directSaved = withContext(Dispatchers.IO + kotlinx.coroutines.NonCancellable) {
-                            var direct = false
-                            if (sourceFile != null && sourceFile.canWrite()) {
-                                direct = replaceFileAtomically(tempImageFile, sourceFile)
-                            }
-                            if (!direct) {
-                                // The provider writes the same file on disk: the folder watcher
-                                // must not take that write for a download (it locks the photo).
-                                sourceFile?.let { repository.noteOwnWrite(it) }
-                                try {
-                                    direct = overwriteThroughResolver(app, media.uri, tempImageFile)
-                                } finally {
-                                    sourceFile?.let { repository.endOwnWrite(it) }
-                                }
-                            }
-                            direct
-                        }
-                        if (directSaved) {
-                            val now = System.currentTimeMillis()
-                            val newSize = tempImageFile.length()
-                            if (sourceFile != null && sourceFile.exists()) {
-                                runCatching { sourceFile.setLastModified(now) }
-                                MediaScannerConnection.scanFile(app, arrayOf(sourceFile.absolutePath), null) { _, _ ->
-                                    repository.requestRefresh()
-                                }
-                            } else {
-                                repository.requestRefresh()
-                            }
-                            repository.updateMediaItem(media.id) { current ->
-                                current.copy(
-                                    dateModifiedMs = now,
-                                    sizeBytes = newSize,
-                                )
-                            }
-                            if (lastActiveViewerMedia?.id == media.id) {
-                                lastActiveViewerMedia = lastActiveViewerMedia?.copy(
-                                    dateModifiedMs = now,
-                                    sizeBytes = newSize,
-                                )
-                            }
-                            val oldKey = "thumb-${media.id}-${media.dateModifiedMs}"
-                            val newKey = "thumb-${media.id}-$now"
-                            val oldFullKey = "full-${media.id}-${media.dateModifiedMs}"
-                            val newFullKey = "full-${media.id}-$now"
-                            val imageLoader = SingletonImageLoader.get(app)
-                            val keysToEvict = buildList {
-                                add(oldKey)
-                                add(newKey)
-                                add(oldFullKey)
-                                add(newFullKey)
-                                add(media.uri.toString())
-                                for (g in 0..5) {
-                                    add("$oldKey-g$g")
-                                    add("$newKey-g$g")
-                                    add("$oldFullKey-g$g")
-                                    add("$newFullKey-g$g")
-                                    add("${media.uri}-g$g")
-                                }
-                                sourceFile?.let { sf ->
-                                    add(sf.absolutePath)
-                                    for (g in 0..5) {
-                                        add("${sf.absolutePath}-g$g")
-                                    }
-                                }
-                            }
-                            // Disk cache work off the main thread (about 40 removals).
-                            withContext(Dispatchers.IO + kotlinx.coroutines.NonCancellable) {
-                                keysToEvict.forEach { key ->
-                                    imageLoader.diskCache?.remove(key)
-                                }
-                            }
-                            // Only this file's entries: clearing everything reloaded every thumbnail.
-                            // By prefix too: sized keys ("-s<px>") and later generations are not in the list.
-                            val evictSet = keysToEvict.toSet()
-                            val evictPrefixes = listOf("thumb-${media.id}-", "full-${media.id}-", media.uri.toString()) +
-                                listOfNotNull(sourceFile?.absolutePath)
-                            imageLoader.memoryCache?.let { cache ->
-                                cache.keys.filter { k -> k.key in evictSet || evictPrefixes.any { k.key.startsWith(it) } }
-                                    .forEach { cache.remove(it) }
-                            }
-                            // Folder covers keep their own copies (keyed with the old date).
-                            dev.ander.alexet.data.FolderCoverCache.removeByPrefix("thumb-${media.id}-")
-                            // The tile reloads by itself (updateMediaItem gave it a new date, so a new
-                            // key); only its folder cover needs a nudge. A global epoch bump reloaded
-                            // every thumbnail in the library.
-                            bumpFolderCovers(listOf(media.bucketId))
-                            true
-                        } else {
-                            false
-                        }
+                        replaceOriginalInPlace(app, media, sourceFile, tempImageFile)
                     } else {
                         val wroteCopy = saveEditedImageToStorage(
                             context = app,
@@ -5922,6 +6002,7 @@ class GalleryViewModel(
                         wroteCopy
                     }
 
+                    savedResult = saved
                     if (saved) {
                         toast(copyReason ?: R.string.image_saved)
                         // Another edit may have been opened while this one was saving: only the
@@ -5953,8 +6034,453 @@ class GalleryViewModel(
                 tempImageFile.delete()
                 _editSaveProgress.value = null
                 _isSavingEdit.value = false
+                onFinished?.invoke(savedResult)
             }
         }
+        return true
+    }
+
+    /**
+     * Puts [newContent] in place of [media]'s file and brings the list, the thumbnails and the
+     * caches up to date ([durationMs]: a cut video's new length). False when the file could not
+     * be replaced; it is then unchanged. Not cancellable: once the file is replaced, the list,
+     * the thumbnails and the toast must follow (a cancel left the old date and thumbnail).
+     */
+    private suspend fun replaceOriginalInPlace(
+        app: Application,
+        media: GalleryMedia,
+        sourceFile: File?,
+        newContent: File,
+        durationMs: Long? = null,
+    ): Boolean {
+        val directSaved = withContext(Dispatchers.IO + kotlinx.coroutines.NonCancellable) {
+            var direct = false
+            if (sourceFile != null && sourceFile.canWrite()) {
+                direct = replaceFileAtomically(newContent, sourceFile)
+            }
+            if (!direct) {
+                // The provider writes the same file on disk: the folder watcher
+                // must not take that write for a download (it locks the photo).
+                sourceFile?.let { repository.noteOwnWrite(it) }
+                try {
+                    direct = overwriteThroughResolver(app, media.uri, newContent)
+                } finally {
+                    sourceFile?.let { repository.endOwnWrite(it) }
+                }
+            }
+            direct
+        }
+        if (!directSaved) return false
+        val now = System.currentTimeMillis()
+        val newSize = newContent.length()
+        if (sourceFile != null && sourceFile.exists()) {
+            runCatching { sourceFile.setLastModified(now) }
+            MediaScannerConnection.scanFile(app, arrayOf(sourceFile.absolutePath), null) { _, _ ->
+                repository.requestRefresh()
+            }
+        } else {
+            repository.requestRefresh()
+        }
+        repository.updateMediaItem(media.id) { current ->
+            current.copy(
+                dateModifiedMs = now,
+                sizeBytes = newSize,
+                durationMs = durationMs ?: current.durationMs,
+            )
+        }
+        if (lastActiveViewerMedia?.id == media.id) {
+            lastActiveViewerMedia = lastActiveViewerMedia?.copy(
+                dateModifiedMs = now,
+                sizeBytes = newSize,
+                durationMs = durationMs ?: lastActiveViewerMedia?.durationMs ?: 0L,
+            )
+        }
+        val oldKey = "thumb-${media.id}-${media.dateModifiedMs}"
+        val newKey = "thumb-${media.id}-$now"
+        val oldFullKey = "full-${media.id}-${media.dateModifiedMs}"
+        val newFullKey = "full-${media.id}-$now"
+        val imageLoader = SingletonImageLoader.get(app)
+        val keysToEvict = buildList {
+            add(oldKey)
+            add(newKey)
+            add(oldFullKey)
+            add(newFullKey)
+            add(media.uri.toString())
+            for (g in 0..5) {
+                add("$oldKey-g$g")
+                add("$newKey-g$g")
+                add("$oldFullKey-g$g")
+                add("$newFullKey-g$g")
+                add("${media.uri}-g$g")
+            }
+            sourceFile?.let { sf ->
+                add(sf.absolutePath)
+                for (g in 0..5) {
+                    add("${sf.absolutePath}-g$g")
+                }
+            }
+        }
+        // Disk cache work off the main thread (about 40 removals).
+        withContext(Dispatchers.IO + kotlinx.coroutines.NonCancellable) {
+            keysToEvict.forEach { key ->
+                imageLoader.diskCache?.remove(key)
+            }
+        }
+        // Only this file's entries: clearing everything reloaded every thumbnail.
+        // By prefix too: sized keys ("-s<px>") and later generations are not in the list.
+        val evictSet = keysToEvict.toSet()
+        val evictPrefixes = listOf("thumb-${media.id}-", "full-${media.id}-", media.uri.toString()) +
+            listOfNotNull(sourceFile?.absolutePath)
+        imageLoader.memoryCache?.let { cache ->
+            cache.keys.filter { k -> k.key in evictSet || evictPrefixes.any { k.key.startsWith(it) } }
+                .forEach { cache.remove(it) }
+        }
+        // Folder covers keep their own copies (keyed with the old date).
+        dev.ander.alexet.data.FolderCoverCache.removeByPrefix("thumb-${media.id}-")
+        // The tile reloads by itself (updateMediaItem gave it a new date, so a new
+        // key); only its folder cover needs a nudge. A global epoch bump reloaded
+        // every thumbnail in the library.
+        bumpFolderCovers(listOf(media.bucketId))
+        return true
+    }
+
+    // --- Quick edit: compression, cut, turn and proportions of one photo or video ---
+
+    private val _quickEdit = MutableStateFlow<dev.ander.alexet.data.QuickEditSource?>(null)
+    val quickEdit: StateFlow<dev.ander.alexet.data.QuickEditSource?> = _quickEdit.asStateFlow()
+
+    /** The video a quick edit is making now (its tile shows the forge); null when none. */
+    private val _quickEditTarget = MutableStateFlow<dev.ander.alexet.data.QuickEditTarget?>(null)
+    val quickEditTarget: StateFlow<dev.ander.alexet.data.QuickEditTarget?> = _quickEditTarget.asStateFlow()
+    private val _quickEditPercent = MutableStateFlow(0)
+    val quickEditPercent: StateFlow<Int> = _quickEditPercent.asStateFlow()
+    private var quickEditJob: Job? = null
+    private var quickEditFinishing = false
+    private val quickPhotoEncoder = dev.ander.alexet.data.QuickPhotoEncoder()
+
+    /** A folder to show (a finished quick edit's notification); the screen opens it as a tap would. */
+    private val _showFolderRequest = MutableStateFlow<Long?>(null)
+    val showFolderRequest: StateFlow<Long?> = _showFolderRequest.asStateFlow()
+
+    fun requestShowFolder(folderId: Long) {
+        closeViewer()
+        clearSelection()
+        _showFolderRequest.value = folderId
+    }
+
+    /** Opens [id] as a tap on it would in this layout (never closing it, unlike a second tap). */
+    fun showFolder(id: Long, wide: Boolean) {
+        if (blockIfFolderDeleting(id)) return
+        val mode = store.settings.value.contentViewMode
+        when {
+            wide && mode == ContentViewMode.MULTI_FOLDER -> openOnRight(id)
+            !wide || mode == ContentViewMode.EXPAND_FOLDERS -> openFolder(id, fromPhone = true)
+            else -> openFolder(id, fromPhone = false)
+        }
+    }
+
+    fun consumeShowFolderRequest() {
+        _showFolderRequest.value = null
+    }
+
+    fun openQuickEdit(media: GalleryMedia) {
+        AppLog.event("Action") { "openQuickEdit id=${media.id} ${media.displayName}" }
+        if (_isSavingEdit.value) return
+        if (withoutOtherFiles(listOf(media)).isEmpty()) return
+        if (blockIfDownloading(media)) return
+        if (blockIfPrivate(listOf(media))) return
+        if (!dev.ander.alexet.data.QuickEdit.supports(media)) {
+            toast(R.string.quick_edit_not_supported)
+            return
+        }
+        // One video at a time: a second export would share the notification and the forge.
+        if (media.isVideo && _quickEditTarget.value != null) {
+            toast(R.string.quick_edit_busy)
+            return
+        }
+        viewModelScope.launch {
+            val source = withContext(Dispatchers.IO) { readQuickEditSource(getApplication(), media) }
+            if (source == null) toast(R.string.quick_edit_open_failed) else _quickEdit.value = source
+        }
+    }
+
+    fun closeQuickEdit() {
+        _quickEdit.value = null
+        viewModelScope.launch { quickPhotoEncoder.clear() }
+    }
+
+    /** Exact size of the photo saved with [settings]; null when it can't be made. */
+    suspend fun quickEditPhotoBytes(
+        source: dev.ander.alexet.data.QuickEditSource,
+        settings: dev.ander.alexet.data.QuickEditSettings,
+    ): Long? {
+        val app = getApplication<Application>()
+        val file = withContext(Dispatchers.IO) { repository.fileForMedia(source.media) }
+        return quickPhotoEncoder.bytes(app, source, file, settings)
+    }
+
+    /** The photo quality (and size, if needed) that makes it at most [targetBytes]. */
+    suspend fun quickEditFitPhoto(
+        source: dev.ander.alexet.data.QuickEditSource,
+        settings: dev.ander.alexet.data.QuickEditSettings,
+        targetBytes: Long,
+    ): dev.ander.alexet.data.QuickEdit.Fit<Float>? {
+        val app = getApplication<Application>()
+        val file = withContext(Dispatchers.IO) { repository.fileForMedia(source.media) }
+        return dev.ander.alexet.data.QuickEdit.fitToSize(targetBytes, dev.ander.alexet.data.QuickEdit.PHOTO_SCALES) { scale, quality ->
+            quickPhotoEncoder.bytes(app, source, file, settings.copy(scale = scale, quality = quality)) ?: Long.MAX_VALUE
+        }
+    }
+
+    /**
+     * Saves in the background: the popup and the viewer close at once, back to the gallery. A
+     * video's tile shows the forge and the notification its progress; a photo ends with a toast.
+     */
+    fun saveQuickEdit(
+        source: dev.ander.alexet.data.QuickEditSource,
+        settings: dev.ander.alexet.data.QuickEditSettings,
+        overwrite: Boolean,
+        launchDelete: ((android.content.IntentSender) -> Unit)?,
+    ) {
+        AppLog.event("Action") { "saveQuickEdit id=${source.media.id} overwrite=$overwrite $settings" }
+        if (source.media.isVideo && _quickEditTarget.value != null) {
+            toast(R.string.quick_edit_busy)
+            return
+        }
+        closeQuickEdit()
+        if (interaction.value.viewerMediaId != null) closeViewer()
+        if (source.media.isVideo) {
+            saveQuickEditVideo(source, settings, overwrite, launchDelete)
+            return
+        }
+        val started = saveEditedImage(
+            editState = dev.ander.alexet.data.QuickEdit.photoEditState(source, settings),
+            overwriteRequested = overwrite,
+            launchDelete = launchDelete,
+            target = source.media,
+            quality = settings.quality,
+            scale = settings.scale,
+        )
+        if (!started) toast(R.string.quick_edit_busy)
+    }
+
+    private fun saveQuickEditVideo(
+        source: dev.ander.alexet.data.QuickEditSource,
+        settings: dev.ander.alexet.data.QuickEditSettings,
+        overwrite: Boolean,
+        launchDelete: ((android.content.IntentSender) -> Unit)?,
+    ) {
+        val media = source.media
+        _quickEditPercent.value = 0
+        quickEditFinishing = false
+        quickEditJob = viewModelScope.launch {
+            val app = getApplication<Application>()
+            val sourceFile = withContext(Dispatchers.IO) { repository.fileForMedia(media) }
+            // In place only into an .mp4: another container gets an .mp4 copy and the original
+            // goes to the trash.
+            val inPlace = overwrite && media.displayName.endsWith(".mp4", ignoreCase = true)
+            // A copy is written where it will stay: its tile is there from the start (with the
+            // forge) and nothing is copied at the end. Elsewhere (no write access): a temp file.
+            val folder = sourceFile?.parentFile?.takeIf { !inPlace && it.isDirectory && it.canWrite() }
+            val output = if (folder != null) {
+                uniqueEditFile(folder, media.displayName.substringBeforeLast('.'), "mp4")
+            } else {
+                File(app.cacheDir, "alexet_quick_${System.currentTimeMillis()}.mp4")
+            }
+            val direct = folder != null
+            _quickEditTarget.value = dev.ander.alexet.data.QuickEditTarget(media, output.absolutePath.takeIf { direct })
+            // Keeps the process alive when the user leaves the app during a long export, and
+            // shows its progress with "Cancel".
+            dev.ander.alexet.integration.ExportService.cancelHandler = { cancelQuickEditSave() }
+            dev.ander.alexet.integration.ExportService.start(
+                app,
+                title = app.getString(R.string.quick_edit_notification_running, media.displayName),
+                cancelable = true,
+            )
+            if (direct) {
+                // Not a download: the folder watch must not lock it. A crash mid-way leaves no
+                // broken file (the next start removes it).
+                repository.noteOwnWrite(output)
+                dev.ander.alexet.data.StartupRecovery.notePartial(app, output)
+            }
+            var saved = false
+            var cancelled = false
+            var listedEarly = false
+            try {
+                val project = dev.ander.alexet.data.QuickEdit.videoProject(source, settings)
+                val exported = dev.ander.alexet.data.videoeditor.VideoExportEngine.exportVideo(
+                    context = app,
+                    project = project,
+                    config = dev.ander.alexet.data.QuickEdit.videoConfig(source, settings),
+                    outputFile = output,
+                    onProgress = { pct ->
+                        _quickEditPercent.value = pct.coerceIn(0, 100)
+                        dev.ander.alexet.integration.ExportService.update(app, pct)
+                        if (direct) {
+                            // Still Alexet's own write (the mark lasts seconds).
+                            repository.noteOwnWrite(output)
+                            if (!listedEarly && output.exists()) {
+                                // The new file's tile shows up now, where it will stay.
+                                listedEarly = true
+                                MediaScannerConnection.scanFile(app, arrayOf(output.absolutePath), null) { _, _ ->
+                                    repository.requestRefresh()
+                                }
+                            }
+                        }
+                    },
+                )
+                if (exported && output.exists() && output.length() > 0L) {
+                    quickEditFinishing = true
+                    saved = withContext(kotlinx.coroutines.NonCancellable) {
+                        when {
+                            direct -> {
+                                repository.endOwnWrite(output)
+                                dev.ander.alexet.data.StartupRecovery.donePartial(app, output)
+                                // In the list before the notification says it is done.
+                                scanAndWait(app, output)
+                                repository.requestRefresh()
+                                // The folder's cover (the new file, shown with the original's
+                                // picture until now) loads the finished file's.
+                                bumpFolderCovers(listOf(media.bucketId))
+                                true
+                            }
+                            inPlace -> replaceOriginalInPlace(app, media, sourceFile, output, project.clips.first().trimmedDurationMs)
+                            else -> {
+                                val copied = saveExportedMediaToStorage(
+                                    context = app,
+                                    tempFile = output,
+                                    baseName = media.displayName.substringBeforeLast('.'),
+                                    ext = "mp4",
+                                    format = dev.ander.alexet.data.videoeditor.ExportFormat.MP4,
+                                    preferredFolder = sourceFile?.parentFile,
+                                )
+                                if (copied) repository.requestRefresh()
+                                copied
+                            }
+                        }
+                    }
+                    if (saved && overwrite && !inPlace) {
+                        withContext(kotlinx.coroutines.NonCancellable) { deleteReplacedOriginal(media, sourceFile, launchDelete) }
+                    }
+                }
+                toast(if (saved) R.string.export_completed else R.string.export_failed)
+            } catch (e: Exception) {
+                if (e is CancellationException) {
+                    cancelled = true
+                    throw e
+                }
+                AppLog.e("QuickEdit", "video not saved", e)
+                toast(R.string.export_failed)
+            } finally {
+                withContext(kotlinx.coroutines.NonCancellable) {
+                    if (direct && !saved) {
+                        // Cancelled or failed: no half-made file is left, nor its row in the list.
+                        withContext(Dispatchers.IO) { output.delete() }
+                        repository.endOwnWrite(output)
+                        dev.ander.alexet.data.StartupRecovery.donePartial(app, output)
+                        scanAndWait(app, output)
+                        repository.requestRefresh()
+                    } else if (!direct) {
+                        withContext(Dispatchers.IO) { output.delete() }
+                    }
+                }
+                quickEditFinishing = false
+                _quickEditTarget.value = null
+                dev.ander.alexet.integration.ExportService.cancelHandler = null
+                dev.ander.alexet.integration.ExportService.stop(app)
+                if (!cancelled) {
+                    // Done (the bar at 100%) or failed: a tap shows the folder of the file.
+                    dev.ander.alexet.integration.ExportService.notifyResult(
+                        app,
+                        title = app.getString(if (saved) R.string.quick_edit_notification_done else R.string.quick_edit_notification_failed),
+                        text = media.displayName,
+                        folderId = media.bucketId,
+                    )
+                }
+            }
+        }
+    }
+
+    /** "name_edit.ext", or "name_edit_1.ext"... when taken (as the export's copies are named). */
+    private fun uniqueEditFile(folder: File, baseName: String, ext: String): File {
+        var candidate = File(folder, "${baseName}_edit.$ext")
+        var index = 1
+        while (candidate.exists()) {
+            candidate = File(folder, "${baseName}_edit_$index.$ext")
+            index++
+        }
+        return candidate
+    }
+
+    /** Hands [file] to the media scanner and waits (up to 20 s) until it is in the system's list. */
+    private suspend fun scanAndWait(app: Application, file: File) {
+        kotlinx.coroutines.withTimeoutOrNull(20_000L) {
+            kotlinx.coroutines.suspendCancellableCoroutine<Unit> { cont ->
+                MediaScannerConnection.scanFile(app, arrayOf(file.absolutePath), null) { _, _ ->
+                    if (cont.isActive) cont.resumeWith(Result.success(Unit))
+                }
+            }
+        }
+    }
+
+    /** The file a quick edit is making can't be opened until it is done. */
+    private fun blockIfQuickEditing(item: GalleryMedia): Boolean {
+        val target = _quickEditTarget.value ?: return false
+        val busy = target.outputPath?.let { item.absolutePath == it } ?: false
+        if (busy) toast(R.string.quick_edit_file_busy)
+        return busy
+    }
+
+    /** Stops a video's export; a save already writing the file finishes. */
+    fun cancelQuickEditSave() {
+        val job = quickEditJob ?: return
+        if (!job.isActive || quickEditFinishing) return
+        job.cancel()
+        toast(R.string.export_cancelled)
+    }
+
+    /** Size as shown and length, read from the file (the list's values may be missing or unturned). */
+    private fun readQuickEditSource(app: Application, media: GalleryMedia): dev.ander.alexet.data.QuickEditSource? {
+        val file = repository.fileForMedia(media)
+        if (media.isVideo) {
+            val retriever = android.media.MediaMetadataRetriever()
+            return try {
+                if (file != null && file.exists()) retriever.setDataSource(file.absolutePath) else retriever.setDataSource(app, media.uri)
+                fun read(key: Int) = retriever.extractMetadata(key)?.toLongOrNull()
+                val w = read(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toInt() ?: media.width
+                val h = read(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toInt() ?: media.height
+                val turned = read(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toInt()?.let { it % 180 == 90 } == true
+                val duration = read(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION) ?: media.durationMs
+                if (w <= 0 || h <= 0 || duration <= 0L) return null
+                val (shownW, shownH) = if (turned) h to w else w to h
+                // The average over the whole file: what 100% quality keeps.
+                val bytes = file?.length()?.takeIf { it > 0L } ?: media.sizeBytes
+                val bitrate = if (bytes > 0L) bytes * 8_000L / duration
+                else read(android.media.MediaMetadataRetriever.METADATA_KEY_BITRATE) ?: 0L
+                dev.ander.alexet.data.QuickEditSource(
+                    media = media.copy(width = shownW, height = shownH, durationMs = duration),
+                    width = shownW,
+                    height = shownH,
+                    durationMs = duration,
+                    bitrate = bitrate,
+                )
+            } catch (e: Exception) {
+                AppLog.w("QuickEdit", "video not read", e)
+                null
+            } finally {
+                runCatching { retriever.release() }
+            }
+        }
+        val (w, h) = ImageEditEngine.readImageBounds(app, file, media.uri) ?: return null
+        // EXIF orientations 5 to 8 turn the photo a quarter: its sides swap.
+        val turned = ImageEditEngine.readExifOrientation(app, file, media.uri) in 5..8
+        val (shownW, shownH) = if (turned) h to w else w to h
+        return dev.ander.alexet.data.QuickEditSource(
+            media = media.copy(width = shownW, height = shownH),
+            width = shownW,
+            height = shownH,
+            durationMs = 0L,
+        )
     }
 
     /**
@@ -6551,6 +7077,9 @@ class GalleryViewModel(
 
     companion object {
         private const val KEY_PHONE_FOLDER_ID = "phoneFolderId"
+        /** The daily update check waits this long after start. */
+        private const val UPDATE_CHECK_DELAY_MS = 8_000L
+
         /** Folders smaller than this get the half scan's close look in full. */
         private const val HALF_SCAN_WHOLE_BELOW = 50
         private const val HALF_SCAN_BEFORE = 30

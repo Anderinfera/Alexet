@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Slideshow widget: chosen photos one after another. -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:configure="dev.ander.alexet.widget.SlideshowWidgetConfigActivity"
+    android:description="@string/slideshow_widget_description"
+    android:initialLayout="@layout/widget_slideshow_15s"
+    android:minWidth="110dp"
+    android:minHeight="110dp"
+    android:minResizeWidth="60dp"
+    android:minResizeHeight="60dp"
+    android:previewLayout="@layout/widget_slideshow_preview"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellWidth="2"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen"
+    android:widgetFeatures="reconfigurable" />

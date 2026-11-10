@@ -219,6 +219,7 @@ class SettingsStore(context: Context) {
             put("randomizeFileNamesInPrivateFolders", value.randomizeFileNamesInPrivateFolders)
             put("stripExifInPrivateFolders", value.stripExifInPrivateFolders)
             put("stripExifOnShare", value.stripExifOnShare)
+            put("checkUpdates", value.checkUpdates)
             put("operationsFollowSelectionOrder", value.operationsFollowSelectionOrder)
             put("scrollerOnRight", value.scrollerOnRight)
             put("scrollerEnabled", value.scrollerEnabled)
@@ -237,6 +238,7 @@ class SettingsStore(context: Context) {
             put("customWallpaperUnfoldedHeight", value.customWallpaperUnfoldedHeight)
             put("autoFoldSplitEnabled", value.autoFoldSplitEnabled)
             put("foldSplitAngleThreshold", value.foldSplitAngleThreshold.toDouble())
+            put("dynamicSplit", value.dynamicSplit)
             put("showFoldableSettings", value.showFoldableSettings)
             put("smartSearchEnabled", value.smartSearchEnabled)
             put("aiEffects", value.aiEffects.toJson())
@@ -341,6 +343,7 @@ class SettingsStore(context: Context) {
                 randomizeFileNamesInPrivateFolders = if (o.has("randomizeFileNamesInPrivateFolders")) o.optBoolean("randomizeFileNamesInPrivateFolders", current.randomizeFileNamesInPrivateFolders) else current.randomizeFileNamesInPrivateFolders,
                 stripExifInPrivateFolders = if (o.has("stripExifInPrivateFolders")) o.optBoolean("stripExifInPrivateFolders", current.stripExifInPrivateFolders) else current.stripExifInPrivateFolders,
                 stripExifOnShare = if (o.has("stripExifOnShare")) o.optBoolean("stripExifOnShare", current.stripExifOnShare) else current.stripExifOnShare,
+                checkUpdates = if (o.has("checkUpdates")) o.optBoolean("checkUpdates", current.checkUpdates) else current.checkUpdates,
                 operationsFollowSelectionOrder = if (o.has("operationsFollowSelectionOrder")) o.optBoolean("operationsFollowSelectionOrder", current.operationsFollowSelectionOrder) else current.operationsFollowSelectionOrder,
                 scrollerOnRight = if (o.has("scrollerOnRight")) o.optBoolean("scrollerOnRight", current.scrollerOnRight) else current.scrollerOnRight,
                 scrollerEnabled = if (o.has("scrollerEnabled")) o.optBoolean("scrollerEnabled", current.scrollerEnabled) else current.scrollerEnabled,
@@ -355,6 +358,7 @@ class SettingsStore(context: Context) {
                 customWallpaperUnfoldedHeight = if (o.has("customWallpaperUnfoldedHeight")) o.optInt("customWallpaperUnfoldedHeight", current.customWallpaperUnfoldedHeight) else current.customWallpaperUnfoldedHeight,
                 autoFoldSplitEnabled = if (o.has("autoFoldSplitEnabled")) o.optBoolean("autoFoldSplitEnabled", current.autoFoldSplitEnabled) else current.autoFoldSplitEnabled,
                 foldSplitAngleThreshold = if (o.has("foldSplitAngleThreshold")) o.optDouble("foldSplitAngleThreshold", current.foldSplitAngleThreshold.toDouble()).toFloat().coerceIn(5f, 90f) else current.foldSplitAngleThreshold,
+                dynamicSplit = if (o.has("dynamicSplit")) o.optBoolean("dynamicSplit", current.dynamicSplit) else current.dynamicSplit,
                 showFoldableSettings = if (o.has("showFoldableSettings")) o.optBoolean("showFoldableSettings", current.showFoldableSettings) else current.showFoldableSettings,
                 smartSearchEnabled = if (o.has("smartSearchEnabled")) o.optBoolean("smartSearchEnabled", current.smartSearchEnabled) else current.smartSearchEnabled,
                 aiEffects = o.optJSONObject("aiEffects")?.let { AiEffectsConfig.parse(it, fallback = current.aiEffects) } ?: current.aiEffects,
@@ -463,6 +467,7 @@ class SettingsStore(context: Context) {
             randomizeFileNamesInPrivateFolders = prefs.getBoolean(KEY_RANDOMIZE_FILE_NAMES_IN_PRIVATE_FOLDERS, true),
             stripExifInPrivateFolders = prefs.getBoolean(KEY_STRIP_EXIF_IN_PRIVATE_FOLDERS, true),
             stripExifOnShare = prefs.getBoolean(KEY_STRIP_EXIF_ON_SHARE, false),
+            checkUpdates = prefs.getBoolean(KEY_CHECK_UPDATES, true),
             operationsFollowSelectionOrder = prefs.getBoolean(KEY_OPERATIONS_FOLLOW_SELECTION_ORDER, false),
             scrollerOnRight = prefs.getBoolean(KEY_SCROLLER_ON_RIGHT, false),
             scrollerEnabled = prefs.getBoolean(KEY_SCROLLER_ENABLED, true),
@@ -479,6 +484,7 @@ class SettingsStore(context: Context) {
             customWallpaperUnfoldedHeight = prefs.getInt(KEY_CUSTOM_WALLPAPER_UNFOLDED_H, 0),
             autoFoldSplitEnabled = prefs.getBoolean(KEY_AUTO_FOLD_SPLIT_ENABLED, true),
             foldSplitAngleThreshold = prefs.getFloat(KEY_FOLD_SPLIT_ANGLE_THRESHOLD, 20f),
+            dynamicSplit = prefs.getBoolean(KEY_DYNAMIC_SPLIT, true),
             showFoldableSettings = prefs.getBoolean(KEY_SHOW_FOLDABLE_SETTINGS, false),
             foldableDetected = prefs.getBoolean(KEY_FOLDABLE_DETECTED, false),
             pendingMedia = MediaRefs.fromJson(prefs.getString(KEY_PENDING_MEDIA, null)?.let { raw ->
@@ -556,6 +562,7 @@ class SettingsStore(context: Context) {
             putBoolean(KEY_RANDOMIZE_FILE_NAMES_IN_PRIVATE_FOLDERS, value.randomizeFileNamesInPrivateFolders)
             putBoolean(KEY_STRIP_EXIF_IN_PRIVATE_FOLDERS, value.stripExifInPrivateFolders)
             putBoolean(KEY_STRIP_EXIF_ON_SHARE, value.stripExifOnShare)
+            putBoolean(KEY_CHECK_UPDATES, value.checkUpdates)
             putBoolean(KEY_OPERATIONS_FOLLOW_SELECTION_ORDER, value.operationsFollowSelectionOrder)
             putBoolean(KEY_SCROLLER_ON_RIGHT, value.scrollerOnRight)
             putBoolean(KEY_SCROLLER_ENABLED, value.scrollerEnabled)
@@ -578,6 +585,7 @@ class SettingsStore(context: Context) {
             putInt(KEY_CUSTOM_WALLPAPER_UNFOLDED_H, value.customWallpaperUnfoldedHeight)
             putBoolean(KEY_AUTO_FOLD_SPLIT_ENABLED, value.autoFoldSplitEnabled)
             putFloat(KEY_FOLD_SPLIT_ANGLE_THRESHOLD, value.foldSplitAngleThreshold)
+            putBoolean(KEY_DYNAMIC_SPLIT, value.dynamicSplit)
             putBoolean(KEY_SHOW_FOLDABLE_SETTINGS, value.showFoldableSettings)
             putBoolean(KEY_FOLDABLE_DETECTED, value.foldableDetected)
             putBoolean(KEY_DEBUG_LOGGING, value.debugLogging)
@@ -614,6 +622,7 @@ class SettingsStore(context: Context) {
     fun setRandomizeFileNamesInPrivateFolders(randomize: Boolean) = update { it.copy(randomizeFileNamesInPrivateFolders = randomize) }
     fun setStripExifInPrivateFolders(strip: Boolean) = update { it.copy(stripExifInPrivateFolders = strip) }
     fun setStripExifOnShare(strip: Boolean) = update { it.copy(stripExifOnShare = strip) }
+    fun setCheckUpdates(enabled: Boolean) = update { it.copy(checkUpdates = enabled) }
     fun setOperationsFollowSelectionOrder(enabled: Boolean) = update { it.copy(operationsFollowSelectionOrder = enabled) }
     fun setFolderContentOrder(folderId: Long, orderedIds: List<Long>) = update { settings ->
         val next = settings.folderContentOrders.toMutableMap()
@@ -674,6 +683,7 @@ class SettingsStore(context: Context) {
         const val KEY_RANDOMIZE_FILE_NAMES_IN_PRIVATE_FOLDERS = "randomize_file_names_in_private_folders"
         const val KEY_STRIP_EXIF_IN_PRIVATE_FOLDERS = "strip_exif_in_private_folders"
         const val KEY_STRIP_EXIF_ON_SHARE = "strip_exif_on_share"
+        const val KEY_CHECK_UPDATES = "check_updates"
         const val KEY_OPERATIONS_FOLLOW_SELECTION_ORDER = "operations_follow_selection_order"
         const val KEY_FOLDER_CONTENT_ORDERS = "folder_content_orders"
         const val KEY_CUSTOM_WALLPAPER_FOLDED_W = "custom_wallpaper_folded_w"
@@ -692,6 +702,7 @@ class SettingsStore(context: Context) {
         const val KEY_FIRST_TIME_OPENED = "first_time_opened"
         const val KEY_AUTO_FOLD_SPLIT_ENABLED = "auto_fold_split_enabled"
         const val KEY_FOLD_SPLIT_ANGLE_THRESHOLD = "fold_split_angle_threshold"
+        const val KEY_DYNAMIC_SPLIT = "dynamic_split"
         const val KEY_SHOW_FOLDABLE_SETTINGS = "show_foldable_settings"
         const val KEY_FOLDABLE_DETECTED = "foldable_detected"
         const val KEY_NEWPIPE_FOLDER = "newpipe_folder_relative_path"
@@ -704,7 +715,12 @@ class SettingsStore(context: Context) {
 
     /** Light mode is a preset: turning it on also turns sharper thumbnails off (they can be turned on again). */
     fun setLightMode(enabled: Boolean) = update {
-        it.copy(lightMode = enabled, highResThumbnails = if (enabled) false else it.highResThumbnails)
+        it.copy(
+            lightMode = enabled,
+            highResThumbnails = if (enabled) false else it.highResThumbnails,
+            // An animation: light mode turns it off (it can be turned on again).
+            dynamicSplit = if (enabled) false else it.dynamicSplit,
+        )
     }
 
     /** Folders were shown for the first time: the one-off speed check is done (whatever the user answers). */
@@ -712,6 +728,7 @@ class SettingsStore(context: Context) {
 
     fun setAutoFoldSplitEnabled(enabled: Boolean) = update { it.copy(autoFoldSplitEnabled = enabled) }
     fun setFoldSplitAngleThreshold(threshold: Float) = update { it.copy(foldSplitAngleThreshold = threshold.coerceIn(5f, 90f)) }
+    fun setDynamicSplit(enabled: Boolean) = update { it.copy(dynamicSplit = enabled) }
     fun setShowFoldableSettings(show: Boolean) = update { it.copy(showFoldableSettings = show) }
     fun setShowAllFiles(show: Boolean) = update { it.copy(showAllFiles = show) }
     fun setShowOtherFileFolders(show: Boolean) = update { it.copy(showOtherFileFolders = show) }

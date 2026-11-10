@@ -46,6 +46,9 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.unit.Constraints
+import kotlin.math.roundToInt
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -108,6 +111,44 @@ internal fun targetPanelSplitRatio(
     }
     val isFolded = isBookMode || (hingeAngle != null && hingeAngle <= (180f - foldSplitAngleThreshold) && hingeAngle > 5f)
     return if (isFolded) 0.5f else customRatio
+}
+
+/**
+ * True while the edge between the folders and the content moves. The tiles of both grids then
+ * drop their own placement animation: with it they trailed the moving edge on a curve of their own.
+ */
+internal val LocalPaneResizing = androidx.compose.runtime.staticCompositionLocalOf<androidx.compose.runtime.State<Boolean>> {
+    mutableStateOf(false)
+}
+
+/**
+ * Folders | divider | content side by side. [leftFraction] (of the width without the divider) is
+ * read while measuring only: a moving edge re-measures the three children, it never recomposes
+ * them. Children: left pane, divider, right pane.
+ */
+@Composable
+internal fun TwoPaneLayout(
+    leftFraction: () -> Float,
+    dividerWidth: Dp,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Layout(content = content, modifier = modifier.fillMaxSize()) { measurables, constraints ->
+        val width = constraints.maxWidth
+        val height = constraints.maxHeight
+        val divider = dividerWidth.roundToPx().coerceIn(0, width)
+        val available = width - divider
+        val leftW = (available * leftFraction().coerceIn(0f, 1f)).roundToInt()
+        val rightW = available - leftW
+        val left = measurables[0].measure(Constraints.fixed(leftW, height))
+        val line = measurables[1].measure(Constraints.fixed(divider, height))
+        val right = measurables[2].measure(Constraints.fixed(rightW, height))
+        layout(width, height) {
+            left.placeRelative(0, 0)
+            line.placeRelative(leftW, 0)
+            right.placeRelative(leftW + divider, 0)
+        }
+    }
 }
 
 /** Finger ratio from which a release closes the pane (the zone is darkened while dragging). */

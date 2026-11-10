@@ -116,6 +116,13 @@ data class VideoExportConfig(
     val quality: ExportQuality = ExportQuality.HIGH,
     val fps: Int = 30,
     val aspectRatio: VideoProjectAspectRatio = VideoProjectAspectRatio.ORIGINAL,
+    /** A bitrate set exactly (quick edit fitting a file size) instead of the one from the quality. */
+    val videoBitrate: Int? = null,
+    /**
+     * The same bitrate all through, so the file comes out at the size reckoned (otherwise the
+     * encoder saves on easy scenes and the file is smaller).
+     */
+    val constantBitrate: Boolean = false,
 )
 
 data class VideoProjectState(

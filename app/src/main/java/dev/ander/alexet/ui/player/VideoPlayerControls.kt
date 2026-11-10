@@ -50,6 +50,7 @@ import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PictureInPicture
+import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RepeatOne
@@ -105,12 +106,11 @@ fun VideoPlayerTopControls(
     contentScale: VideoContentScale,
     playbackSpeed: Float,
     isLooping: Boolean,
-    nextPlayerInstalled: Boolean,
     onBack: () -> Unit,
     onOpenSpeedSheet: () -> Unit,
     onOpenScaleSheet: (() -> Unit)?,
     onToggleLoop: () -> Unit,
-    onPlayInNextPlayer: (() -> Unit)?,
+    onPlayElsewhere: (() -> Unit)?,
     onShare: () -> Unit,
     onDetails: () -> Unit,
     onEdit: (() -> Unit)? = null,
@@ -120,6 +120,8 @@ fun VideoPlayerTopControls(
     onCycleSubtitles: (() -> Unit)? = null,
     /** Centred right under the title row. */
     belowTitle: (@Composable () -> Unit)? = null,
+    /** Shrinks the video into the small window over other apps; null when that is off. */
+    onEnterPip: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
@@ -156,6 +158,18 @@ fun VideoPlayerTopControls(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+
+            if (onEnterPip != null) {
+                FilledTonalIconButton(
+                    onClick = onEnterPip,
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.PictureInPictureAlt,
+                        contentDescription = stringResource(R.string.pip_title),
+                    )
+                }
+            }
 
             // 3-dots Menu
             Box {
@@ -200,20 +214,12 @@ fun VideoPlayerTopControls(
                         },
                         leadingIcon = { Icon(Icons.Rounded.Info, contentDescription = null) },
                     )
-                    if (onPlayInNextPlayer != null) {
+                    if (onPlayElsewhere != null) {
                         DropdownMenuItem(
-                            text = {
-                                Text(
-                                    if (nextPlayerInstalled) {
-                                        stringResource(R.string.play_in_next_player)
-                                    } else {
-                                        stringResource(R.string.next_player_missing)
-                                    },
-                                )
-                            },
+                            text = { Text(stringResource(R.string.play_in_other_player)) },
                             onClick = {
                                 menuExpanded = false
-                                onPlayInNextPlayer()
+                                onPlayElsewhere()
                             },
                             leadingIcon = {
                                 Icon(Icons.Rounded.PlayArrow, contentDescription = null)
@@ -300,9 +306,9 @@ fun VideoPlayerTopControls(
                                 )
                             }
                         }
-                        PlayerShortcut.PLAY_IN_BACKGROUND -> if (onPlayInNextPlayer != null) {
+                        PlayerShortcut.PLAY_IN_BACKGROUND -> if (onPlayElsewhere != null) {
                             FilledTonalIconButton(
-                                onClick = onPlayInNextPlayer,
+                                onClick = onPlayElsewhere,
                                 modifier = Modifier.size(40.dp),
                             ) {
                                 Icon(

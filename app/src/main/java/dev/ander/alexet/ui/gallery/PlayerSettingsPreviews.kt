@@ -7,13 +7,20 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.res.stringResource
+import dev.ander.alexet.R
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
@@ -50,10 +57,12 @@ internal enum class PlayerPreviewKind {
     DOUBLE_CLICK_PLAYER,
     NAV_ARROWS,
     GIF,
+    PIP,
+    BACKGROUND_PLAY,
 }
 
-private val PreviewScreen = Color(0xFF1C1D20)
-private val PreviewWhite = Color.White
+internal val PreviewScreen = Color(0xFF1C1D20)
+internal val PreviewWhite = Color.White
 
 /**
  * A small player screen acting out its option in a loop: the gesture and what it does, with the
@@ -62,6 +71,43 @@ private val PreviewWhite = Color.White
  */
 @Composable
 internal fun PlayerOptionPreview(
+    kind: PlayerPreviewKind,
+    active: Boolean,
+    modifier: Modifier = Modifier,
+    speed: Float = 2f,
+    seekSeconds: Int = 10,
+    hideSeconds: Int = 4,
+) {
+    var open by rememberSaveable { mutableStateOf(false) }
+    PlayerPreviewCanvas(kind, active, modifier.clip(RoundedCornerShape(8.dp)).clickable { open = true }, speed, seekSeconds, hideSeconds)
+    if (open) {
+        val (title, info) = playerPreviewInfo(kind)
+        PreviewInfoCard(
+            title = stringResource(title),
+            body = stringResource(info),
+            onDismiss = { open = false },
+        ) { scaled ->
+            PlayerPreviewCanvas(kind, active = true, modifier = scaled, speed = speed, seekSeconds = seekSeconds, hideSeconds = hideSeconds)
+        }
+    }
+}
+
+/** Name and explanation of each player option picture. */
+private fun playerPreviewInfo(kind: PlayerPreviewKind): Pair<Int, Int> = when (kind) {
+    PlayerPreviewKind.VOLUME -> R.string.player_volume_gesture_title to R.string.preview_info_volume
+    PlayerPreviewKind.BRIGHTNESS -> R.string.player_brightness_gesture_title to R.string.preview_info_brightness
+    PlayerPreviewKind.LONG_PRESS -> R.string.player_long_press_speed_title to R.string.preview_info_long_press
+    PlayerPreviewKind.DOUBLE_TAP -> R.string.player_double_tap_seek_title to R.string.preview_info_double_tap
+    PlayerPreviewKind.AUTO_HIDE -> R.string.player_auto_hide_selector to R.string.preview_info_auto_hide
+    PlayerPreviewKind.DOUBLE_CLICK_PLAYER -> R.string.video_double_click_gallery to R.string.preview_info_double_click_player
+    PlayerPreviewKind.NAV_ARROWS -> R.string.nav_arrows_title to R.string.preview_info_nav_arrows
+    PlayerPreviewKind.GIF -> R.string.autoplay_gifs to R.string.preview_info_gif
+    PlayerPreviewKind.PIP -> R.string.pip_title to R.string.preview_info_pip
+    PlayerPreviewKind.BACKGROUND_PLAY -> R.string.background_play_title to R.string.preview_info_background_play
+}
+
+@Composable
+private fun PlayerPreviewCanvas(
     kind: PlayerPreviewKind,
     active: Boolean,
     modifier: Modifier = Modifier,
@@ -78,12 +124,16 @@ internal fun PlayerOptionPreview(
         PlayerPreviewKind.DOUBLE_CLICK_PLAYER -> 2800
         PlayerPreviewKind.NAV_ARROWS -> 3200
         PlayerPreviewKind.GIF -> 1600
+        PlayerPreviewKind.PIP -> 3000
+        PlayerPreviewKind.BACKGROUND_PLAY -> 3200
     }
     val stillFrame = when (kind) {
         PlayerPreviewKind.AUTO_HIDE -> (300f + hideSeconds * 300f) / cycleMs
         PlayerPreviewKind.DOUBLE_CLICK_PLAYER -> 0.75f
         PlayerPreviewKind.NAV_ARROWS -> 0.2f
         PlayerPreviewKind.GIF -> 0.3f
+        PlayerPreviewKind.PIP -> 0.7f
+        PlayerPreviewKind.BACKGROUND_PLAY -> 0.7f
         else -> 0.5f
     }
     // Read only while drawing: the frames redraw the canvas without recomposing the row.
@@ -131,25 +181,27 @@ internal fun PlayerOptionPreview(
             PlayerPreviewKind.DOUBLE_CLICK_PLAYER -> drawDoubleClickToPlayer(t, accent)
             PlayerPreviewKind.NAV_ARROWS -> drawNavArrows(t, accent)
             PlayerPreviewKind.GIF -> drawGif(t, active, accent, label)
+            PlayerPreviewKind.PIP -> drawPip(t, accent)
+            PlayerPreviewKind.BACKGROUND_PLAY -> drawBackgroundPlay(t, accent)
         }
     }
 }
 
 /** 0 before [a], 1 after [b], linear between. */
-private fun seg(t: Float, a: Float, b: Float): Float = ((t - a) / (b - a)).coerceIn(0f, 1f)
+internal fun seg(t: Float, a: Float, b: Float): Float = ((t - a) / (b - a)).coerceIn(0f, 1f)
 
-private fun ease(x: Float): Float = x * x * (3f - 2f * x)
+internal fun ease(x: Float): Float = x * x * (3f - 2f * x)
 
-private fun lerp(a: Float, b: Float, f: Float): Float = a + (b - a) * f
+internal fun lerp(a: Float, b: Float, f: Float): Float = a + (b - a) * f
 
-private fun DrawScope.drawFinger(center: Offset, alpha: Float) {
+internal fun DrawScope.drawFinger(center: Offset, alpha: Float) {
     if (alpha <= 0f) return
     drawCircle(PreviewWhite.copy(alpha = 0.85f * alpha), radius = 3.5.dp.toPx(), center = center)
     drawCircle(PreviewWhite.copy(alpha = 0.35f * alpha), radius = 5.5.dp.toPx(), center = center, style = Stroke(1.dp.toPx()))
 }
 
 /** A ring spreading out of a tap, [p] from 0 (tap) to 1 (gone). */
-private fun DrawScope.drawRipple(center: Offset, p: Float, color: Color) {
+internal fun DrawScope.drawRipple(center: Offset, p: Float, color: Color) {
     if (p <= 0f || p >= 1f) return
     drawCircle(
         color.copy(alpha = (1f - p) * 0.9f),
@@ -159,7 +211,7 @@ private fun DrawScope.drawRipple(center: Offset, p: Float, color: Color) {
     )
 }
 
-private fun DrawScope.drawLabel(label: TextLayoutResult?, center: Offset, alpha: Float, background: Color? = null) {
+internal fun DrawScope.drawLabel(label: TextLayoutResult?, center: Offset, alpha: Float, background: Color? = null) {
     if (label == null || alpha <= 0f) return
     val w = label.size.width.toFloat()
     val h = label.size.height.toFloat()
@@ -176,7 +228,7 @@ private fun DrawScope.drawLabel(label: TextLayoutResult?, center: Offset, alpha:
     drawText(label, topLeft = topLeft, alpha = alpha)
 }
 
-private fun DrawScope.drawPlayTriangle(center: Offset, radius: Float, color: Color) {
+internal fun DrawScope.drawPlayTriangle(center: Offset, radius: Float, color: Color) {
     val path = Path().apply {
         moveTo(center.x - radius * 0.6f, center.y - radius)
         lineTo(center.x + radius, center.y)
@@ -186,7 +238,7 @@ private fun DrawScope.drawPlayTriangle(center: Offset, radius: Float, color: Col
     drawPath(path, color)
 }
 
-private fun DrawScope.drawChevron(center: Offset, half: Float, pointsRight: Boolean, color: Color, stroke: Float) {
+internal fun DrawScope.drawChevron(center: Offset, half: Float, pointsRight: Boolean, color: Color, stroke: Float) {
     val dir = if (pointsRight) 1f else -1f
     val path = Path().apply {
         moveTo(center.x - dir * half * 0.5f, center.y - half)
@@ -402,4 +454,125 @@ private fun DrawScope.drawGif(t: Float, active: Boolean, accent: Color, label: T
     drawCircle(accent, radius = 4.dp.toPx(), center = ball)
     drawLabel(label, Offset(11.dp.toPx(), 8.dp.toPx()), 1f, background = Color.Black.copy(alpha = 0.6f))
     if (!active) drawPlayTriangle(Offset(w * 0.5f, h * 0.45f), 5.dp.toPx(), PreviewWhite)
+}
+
+/**
+ * Picture in picture: the button at the top is tapped, the video shrinks into a small window in
+ * the corner, over other apps (tiles), and plays on there.
+ */
+private fun DrawScope.drawPip(t: Float, accent: Color) {
+    val w = size.width
+    val h = size.height
+    val button = Offset(w - 7.dp.toPx(), 6.dp.toPx())
+    val tap = seg(t, 0.12f, 0.2f)
+    val shrink = ease(seg(t, 0.25f, 0.55f))
+    val back = seg(t, 0.9f, 1f)
+    val f = shrink * (1f - back)
+    // Other apps under the window, showing as the video leaves the screen.
+    if (f > 0f) {
+        val tileW = (w - 4.dp.toPx() * 4f) / 3f
+        val tileH = (h - 4.dp.toPx() * 3f) / 2f
+        repeat(2) { row ->
+            repeat(3) { col ->
+                drawRoundRect(
+                    PreviewWhite.copy(alpha = 0.16f * f),
+                    topLeft = Offset(4.dp.toPx() + col * (tileW + 4.dp.toPx()), 4.dp.toPx() + row * (tileH + 4.dp.toPx())),
+                    size = Size(tileW, tileH),
+                    cornerRadius = CornerRadius(2.dp.toPx()),
+                )
+            }
+        }
+    }
+    val small = Rect(Offset(w * 0.5f, h * 0.52f), Size(w * 0.44f, h * 0.4f))
+    val frame = Rect(
+        Offset(lerp(0f, small.left, f), lerp(0f, small.top, f)),
+        Size(lerp(w, small.width, f), lerp(h, small.height, f)),
+    )
+    drawRoundRect(
+        Color(0xFF34363C),
+        topLeft = frame.topLeft,
+        size = frame.size,
+        cornerRadius = CornerRadius(lerp(0f, 3.dp.toPx(), f)),
+    )
+    drawRoundRect(
+        accent.copy(alpha = 0.9f * f),
+        topLeft = frame.topLeft,
+        size = frame.size,
+        cornerRadius = CornerRadius(3.dp.toPx()),
+        style = Stroke(1.dp.toPx()),
+    )
+    drawPlayTriangle(frame.center, lerp(5.dp.toPx(), 3.dp.toPx(), f), PreviewWhite.copy(alpha = 0.85f))
+    // The button (a small window in a frame), until the video has gone.
+    val buttonAlpha = 1f - seg(t, 0.25f, 0.35f) * (1f - back)
+    if (buttonAlpha > 0f) {
+        val bw = 7.dp.toPx()
+        val bh = 5.dp.toPx()
+        drawRoundRect(
+            PreviewWhite.copy(alpha = 0.8f * buttonAlpha),
+            topLeft = Offset(button.x - bw / 2f, button.y - bh / 2f),
+            size = Size(bw, bh),
+            cornerRadius = CornerRadius(1.dp.toPx()),
+            style = Stroke(1.dp.toPx()),
+        )
+        drawRect(
+            PreviewWhite.copy(alpha = 0.8f * buttonAlpha),
+            topLeft = Offset(button.x, button.y),
+            size = Size(bw / 2f - 1.dp.toPx(), bh / 2f - 1.dp.toPx()),
+        )
+    }
+    drawRipple(button, seg(t, 0.18f, 0.4f), accent)
+    drawFinger(button, tap * (1f - seg(t, 0.24f, 0.3f)))
+}
+
+/**
+ * Background playback: the app is left (the screen goes dark), the sound plays on (waves), and
+ * the notification at the top has the pause button.
+ */
+private fun DrawScope.drawBackgroundPlay(t: Float, accent: Color) {
+    val w = size.width
+    val h = size.height
+    val dark = ease(seg(t, 0.15f, 0.35f)) * (1f - seg(t, 0.9f, 1f))
+    // The video, fading out as the app is left.
+    drawRect(Color(0xFF34363C).copy(alpha = 1f - dark))
+    drawPlayTriangle(Offset(w / 2f, h / 2f), 5.dp.toPx(), PreviewWhite.copy(alpha = 0.85f * (1f - dark)))
+    if (dark <= 0f) return
+    // Sound waves around a note: it still plays.
+    val center = Offset(w / 2f, h * 0.62f)
+    val pulse = (t * 3f) % 1f
+    repeat(2) { i ->
+        val p = (pulse + i * 0.5f) % 1f
+        drawCircle(
+            accent.copy(alpha = (1f - p) * 0.8f * dark),
+            radius = lerp(4.dp.toPx(), 12.dp.toPx(), p),
+            center = center,
+            style = Stroke(1.dp.toPx()),
+        )
+    }
+    drawCircle(PreviewWhite.copy(alpha = 0.9f * dark), radius = 2.dp.toPx(), center = Offset(center.x - 1.5.dp.toPx(), center.y + 2.dp.toPx()))
+    drawLine(
+        PreviewWhite.copy(alpha = 0.9f * dark),
+        start = Offset(center.x + 0.4.dp.toPx(), center.y + 2.dp.toPx()),
+        end = Offset(center.x + 0.4.dp.toPx(), center.y - 4.dp.toPx()),
+        strokeWidth = 1.dp.toPx(),
+    )
+    // The notification, sliding down from the top.
+    val slide = ease(seg(t, 0.3f, 0.45f))
+    val barH = 9.dp.toPx()
+    val top = lerp(-barH, 3.dp.toPx(), slide)
+    drawRoundRect(
+        PreviewWhite.copy(alpha = 0.22f * dark),
+        topLeft = Offset(4.dp.toPx(), top),
+        size = Size(w - 8.dp.toPx(), barH),
+        cornerRadius = CornerRadius(2.dp.toPx()),
+    )
+    val pause = Offset(w - 10.dp.toPx(), top + barH / 2f)
+    val bar = 1.dp.toPx()
+    drawRect(PreviewWhite.copy(alpha = 0.9f * dark), topLeft = Offset(pause.x - 2.dp.toPx(), pause.y - 2.5.dp.toPx()), size = Size(bar, 5.dp.toPx()))
+    drawRect(PreviewWhite.copy(alpha = 0.9f * dark), topLeft = Offset(pause.x + 1.dp.toPx(), pause.y - 2.5.dp.toPx()), size = Size(bar, 5.dp.toPx()))
+    drawRoundRect(
+        accent.copy(alpha = 0.8f * dark),
+        topLeft = Offset(7.dp.toPx(), top + barH / 2f - 1.dp.toPx()),
+        size = Size((w - 24.dp.toPx()) * (0.3f + 0.4f * seg(t, 0.35f, 0.9f)), 2.dp.toPx()),
+        cornerRadius = CornerRadius(1.dp.toPx()),
+    )
 }

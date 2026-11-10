@@ -26,3 +26,9 @@ __pycache__/
 *.keystore
 *.p12
 *.pem
+
+# Notes for commits and releases
+changes.md
+
+# Standalone drawables not used by the app
+/hammer_anvil_anim.xml

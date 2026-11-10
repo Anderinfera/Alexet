@@ -83,18 +83,19 @@ object VideoExportEngine {
 
                 val transformerBuilder = Transformer.Builder(context)
                 applyOutputMime(transformerBuilder, config)
-                // From the real output frame: "Original" keeps the source size (a 4K source got a
-                // 1080p bitrate and looked blocky).
-                val bitrate = VideoExportPlanner.estimatedVideoBitrate(
-                    outputSize(project, config).let { (w, h) -> minOf(w, h) },
-                    config.fps,
-                    config.qualityPercent,
-                    config.quality,
-                )
+                val bitrate = videoBitrate(project, config)
                 transformerBuilder.setEncoderFactory(
                     DefaultEncoderFactory.Builder(context)
                         .setRequestedVideoEncoderSettings(
-                            VideoEncoderSettings.Builder().setBitrate(bitrate).build(),
+                            VideoEncoderSettings.Builder()
+                                .setBitrate(bitrate)
+                                .apply {
+                                    // An encoder without it keeps its usual (variable) mode.
+                                    if (config.constantBitrate) {
+                                        setBitrateMode(android.media.MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+                                    }
+                                }
+                                .build(),
                         )
                         .build(),
                 )
@@ -160,6 +161,28 @@ object VideoExportEngine {
             synchronized(overlayBitmaps) { overlayBitmaps.forEach { if (!it.isRecycled) it.recycle() } }
         }
     }
+
+    /**
+     * About how big the export will be, in bytes (shown before it starts). Null for a GIF, whose
+     * size depends mostly on what the picture shows.
+     */
+    fun estimatedSizeBytes(project: VideoProjectState, config: VideoExportConfig): Long? {
+        if (project.clips.isEmpty() || config.format == ExportFormat.GIF) return null
+        val video = if (VideoExportPlanner.removesVideoTrack(config.format)) null else videoBitrate(project, config)
+        return VideoExportPlanner.estimatedSizeBytes(VideoExportPlanner.exportDurationMs(project.clips), video)
+    }
+
+    /**
+     * The video's bitrate, from the real output frame: "Original" keeps the source size (a 4K
+     * source got a 1080p bitrate and looked blocky).
+     */
+    private fun videoBitrate(project: VideoProjectState, config: VideoExportConfig): Int =
+        config.videoBitrate ?: VideoExportPlanner.estimatedVideoBitrate(
+            outputSize(project, config).let { (w, h) -> minOf(w, h) },
+            config.fps,
+            config.qualityPercent,
+            config.quality,
+        )
 
     private fun applyOutputMime(
         builder: Transformer.Builder,

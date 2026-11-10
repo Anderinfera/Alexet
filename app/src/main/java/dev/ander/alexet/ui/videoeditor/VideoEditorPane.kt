@@ -827,6 +827,8 @@ fun VideoEditorPane(
             if (showExportDialog) {
                 VideoExportDialog(
                     initialConfig = VideoExportConfig(aspectRatio = state.project.aspectRatio),
+                    // For the size estimate: the frame the export will make.
+                    project = remember { state.projectForExport(density.density, density.fontScale) },
                     onConfirm = { cfg ->
                         showExportDialog = false
                         // With the preview geometry: pan and overlay sizes are kept in preview units.

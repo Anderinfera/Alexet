@@ -1,0 +1,22 @@
+# Compiled ahead of time (installed by ProfileInstaller, compiled by the system's background
+# dexopt): Alexet's own code and the libraries every screen runs on, instead of only the small
+# profiles the libraries bring. Startup, scrolling and the first use of each screen run without
+# waiting for the JIT.
+HSPLdev/ander/alexet/**->**(**)**
+Ldev/ander/alexet/**;
+HSPLandroidx/compose/**->**(**)**
+Landroidx/compose/**;
+HSPLcoil3/**->**(**)**
+Lcoil3/**;
+HSPLkotlinx/coroutines/**->**(**)**
+Lkotlinx/coroutines/**;
+HSPLkotlinx/collections/immutable/**->**(**)**
+HSPLkotlin/**->**(**)**
+Lkotlin/**;
+HSPLandroidx/lifecycle/**->**(**)**
+HSPLandroidx/activity/**->**(**)**
+HSPLandroidx/core/**->**(**)**
+HSPLandroidx/collection/**->**(**)**
+HSPLandroidx/window/**->**(**)**
+HSPLokio/**->**(**)**
+HSPLandroidx/exifinterface/**->**(**)**
