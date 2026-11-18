@@ -31,6 +31,8 @@ class VideoPlayerState {
     var activeDoubleTap by mutableStateOf<DoubleTapFeedback?>(null)
     var activeVerticalGesture by mutableStateOf<VerticalGestureFeedback?>(null)
     var isLongPressSpeedActive by mutableStateOf(false)
+    /** A sideways swipe seeking: the jump and its target. */
+    var swipeSeek by mutableStateOf<SwipeSeekFeedback?>(null)
     var windowBrightnessOverridden by mutableStateOf(false)
     /** Brightness being dragged, between the (fewer) writes to the window. Not observed. */
     var gestureBrightness = -1f
@@ -81,7 +83,8 @@ private val VideoPlayerStateSaver = androidx.compose.runtime.saveable.listSaver<
     },
 )
 
+/** [init] sets up a new state (not one restored after a process restart). */
 @Composable
-fun rememberVideoPlayerState(key: Any? = null): VideoPlayerState {
-    return androidx.compose.runtime.saveable.rememberSaveable(key, saver = VideoPlayerStateSaver) { VideoPlayerState() }
+fun rememberVideoPlayerState(key: Any? = null, init: VideoPlayerState.() -> Unit = {}): VideoPlayerState {
+    return androidx.compose.runtime.saveable.rememberSaveable(key, saver = VideoPlayerStateSaver) { VideoPlayerState().apply(init) }
 }

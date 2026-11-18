@@ -15,6 +15,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -32,6 +33,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -77,21 +79,49 @@ fun AlexetVideoPlayer(
     /** Shown with the controls, just under the title / under the seek bar. */
     topArrow: (@Composable () -> Unit)? = null,
     bottomArrow: (@Composable () -> Unit)? = null,
+    /** Starts playing as soon as it is loaded (not after a return to a paused video). */
+    autoplay: Boolean = false,
+    /** A sideways swipe seeks. */
+    horizontalSeek: Boolean = false,
+    /** An (i) button after the shortcuts opens the details (in place of the arrow under the title). */
+    infoButton: Boolean = false,
+    /** Speed, loop and screen proportions come from (and are saved to) the config, for every video. */
+    rememberState: Boolean = false,
+    /** Saves a change of the player's config. */
+    onUpdatePlayerConfig: ((dev.ander.alexet.integration.AnderLineConfig) -> dev.ander.alexet.integration.AnderLineConfig) -> Unit = {},
+    /** Keeps the window's orientation from before the rotate button; null: given back when this player goes. */
+    orientationKeeper: ScreenOrientationKeeper? = null,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val playerState = rememberVideoPlayerState(media.id)
-    val fallbackConfig = rememberAnderLineConfig()
+    // Read from the settings only when no config is given (the gallery always gives one).
+    val fallbackConfig = if (playerConfig == null) rememberAnderLineConfig() else null
     // Audio: no picture, so no brightness swipe (that side changes the volume too).
     val isAudio = media.isAudio
-    val config = (playerConfig ?: fallbackConfig).let { if (isAudio) it.copy(enableBrightnessSwipeGesture = false) else it }
+    // Remembered: a new copy on every recomposition kept everything that takes it from skipping.
+    val config = remember(playerConfig, fallbackConfig, isAudio) {
+        (playerConfig ?: fallbackConfig!!).let { if (isAudio) it.copy(enableBrightnessSwipeGesture = false) else it }
+    }
+    val playerState = rememberVideoPlayerState(media.id) {
+        if (rememberState) {
+            playbackSpeed = config.rememberedSpeed
+            contentScale = runCatching { VideoContentScale.valueOf(config.rememberedContentScale) }.getOrDefault(VideoContentScale.FIT)
+        }
+    }
 
     // Where playback was when the app went to the background: a killed process starts there again.
     var savedPositionMs by androidx.compose.runtime.saveable.rememberSaveable(media.id) { androidx.compose.runtime.mutableLongStateOf(0L) }
     var showSpeedSheet by remember { mutableStateOf(false) }
     var showScaleSheet by remember { mutableStateOf(false) }
-    var isLooping by androidx.compose.runtime.saveable.rememberSaveable(media.id) { mutableStateOf(false) }
+    var isLooping by androidx.compose.runtime.saveable.rememberSaveable(media.id) { mutableStateOf(rememberState && config.rememberedLoop) }
+    var showShortcuts by remember { mutableStateOf(false) }
+    // The playback buttons' position being edited (not saved until done), null when not editing.
+    var editingButtons by remember { mutableStateOf<Pair<Float, Float>?>(null) }
+    val editingWasPlaying = remember { booleanArrayOf(false) }
+    val swipeSeekWasPlaying = remember { booleanArrayOf(false) }
+    val ownOrientationKeeper = remember { ScreenOrientationKeeper() }
+    val rotationKeeper = orientationKeeper ?: ownOrientationKeeper
     var playPauseFlash by remember { mutableStateOf<PlayPauseFlash?>(null) }
     var playPauseFlashKey by remember { androidx.compose.runtime.mutableIntStateOf(0) }
 
@@ -101,6 +131,9 @@ fun AlexetVideoPlayer(
 
     // The small window over other apps: the video alone, opened with the player's button.
     val activity = remember(context) { context.findActivity() }
+    if (orientationKeeper == null) {
+        DisposableEffect(Unit) { onDispose { ownOrientationKeeper.restore(activity) } }
+    }
     val inPip by PictureInPicture.active.collectAsState()
     val pipSupported = remember(context) { PictureInPicture.isSupported(context) }
     val pipButtonShown = config.pipButton && pipSupported && !isAudio && activity != null
@@ -149,8 +182,9 @@ fun AlexetVideoPlayer(
                     )
                     prepare()
                 }
-                // User Requirement: Video does not autoplay immediately
-                playWhenReady = false
+                // Plays at once only in the player mode, and not when it comes back after a
+                // process restart (it was left paused at the saved position).
+                playWhenReady = autoplay && savedPositionMs == 0L
             }
             private var released = false
             override fun onRemembered() {}
@@ -426,8 +460,8 @@ fun AlexetVideoPlayer(
 
     // Auto-hide controls when playing
     val autoHideDelayMs = (config.controllerAutoHideTimeout * 1000L).coerceAtLeast(2000L)
-    LaunchedEffect(controlsVisible, playerState.isPlaying, playerState.controlsLocked) {
-        if (controlsVisible && playerState.isPlaying && !playerState.controlsLocked) {
+    LaunchedEffect(controlsVisible, playerState.isPlaying, playerState.controlsLocked, editingButtons != null) {
+        if (controlsVisible && playerState.isPlaying && !playerState.controlsLocked && editingButtons == null) {
             delay(autoHideDelayMs)
             onToggleControls()
         }
@@ -476,6 +510,29 @@ fun AlexetVideoPlayer(
     } else {
         null
     }
+    // Previous / play / next, placed by the caller (their saved position, or the editor's preview).
+    val centerControls: @Composable (Modifier) -> Unit = { placement ->
+        VideoPlayerCenterControls(
+            isPlaying = playerState.isPlaying,
+            isBuffering = playerState.isBuffering,
+            hasPrevious = hasPrevious,
+            hasNext = hasNext,
+            onPlayPause = {
+                if (playerState.isPlaying) {
+                    exoPlayer.pause()
+                } else {
+                    if (playerState.isEnded) {
+                        exoPlayer.seekTo(0L)
+                    }
+                    exoPlayer.play()
+                }
+            },
+            onPrevious = onPrevious,
+            onNext = onNext,
+            modifier = placement,
+        )
+    }
+
     val scale = playerState.contentScale
     val density = androidx.compose.ui.platform.LocalDensity.current
     val surfaceModifier = when {
@@ -545,8 +602,30 @@ fun AlexetVideoPlayer(
             VideoPlayerGestureDetector(
                 playerState = playerState,
                 controlsVisible = controlsVisible,
-                onToggleControls = onToggleControls,
+                // While the buttons are moved, a tap hides nothing.
+                onToggleControls = if (editingButtons == null) onToggleControls else ({}),
                 config = config,
+                horizontalSeek = horizontalSeek && editingButtons == null,
+                onSwipeSeekStart = {
+                    // Paused while scrubbing (the frames follow the finger), resumed afterwards.
+                    swipeSeekWasPlaying[0] = exoPlayer.playWhenReady
+                    exoPlayer.pause()
+                    exoPlayer.setScrubbingModeEnabled(true)
+                    exoPlayer.currentPosition
+                },
+                onSwipeSeekPreview = { targetMs ->
+                    exoPlayer.seekTo(targetMs)
+                    playerState.positionMs = targetMs
+                },
+                onSwipeSeekEnd = { targetMs ->
+                    exoPlayer.setScrubbingModeEnabled(false)
+                    if (targetMs != null) {
+                        exoPlayer.seekTo(targetMs)
+                        playerState.positionMs = targetMs
+                    }
+                    if (swipeSeekWasPlaying[0]) exoPlayer.play()
+                    swipeSeekWasPlaying[0] = false
+                },
                 onSeekRelative = { deltaMs ->
                     val dur = exoPlayer.duration
                     val maxPos = if (dur > 0L) dur else Long.MAX_VALUE
@@ -580,33 +659,7 @@ fun AlexetVideoPlayer(
             )
 
             // Visual Gesture Feedback Indicators
-            playerState.activeDoubleTap?.let { feedback ->
-                DoubleTapSeekBubble(
-                    feedback = feedback,
-                    modifier = Modifier
-                        .align(if (feedback.side == SeekSide.LEFT) Alignment.CenterStart else Alignment.CenterEnd)
-                        .padding(horizontal = 48.dp),
-                )
-            }
-
-            playerState.activeVerticalGesture?.let { feedback ->
-                VerticalProgressIndicatorView(
-                    feedback = feedback,
-                    modifier = Modifier
-                        .align(if (feedback.type == VerticalGestureType.BRIGHTNESS) Alignment.CenterStart else Alignment.CenterEnd)
-                        .padding(horizontal = 32.dp),
-                )
-            }
-
-            if (playerState.isLongPressSpeedActive) {
-                LongPressSpeedPill(
-                    speed = config.longPressControlsSpeed,
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .statusBarsPadding()
-                        .padding(top = 16.dp),
-                )
-            }
+            GestureFeedbackOverlays(playerState, longPressSpeed = config.longPressControlsSpeed)
 
             // Full UI Controls Layer
             AnimatedVisibility(
@@ -619,7 +672,7 @@ fun AlexetVideoPlayer(
                 Box(
                     modifier = Modifier.fillMaxSize(),
                 ) {
-                    VideoPlayerTopControls(
+                    if (editingButtons == null) VideoPlayerTopControls(
                         title = media.displayName,
                         config = config,
                         contentScale = playerState.contentScale,
@@ -631,37 +684,42 @@ fun AlexetVideoPlayer(
                         onToggleLoop = {
                             isLooping = !isLooping
                             exoPlayer.repeatMode = if (isLooping) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+                            if (rememberState) {
+                                val loop = isLooping
+                                onUpdatePlayerConfig { it.copy(rememberedLoop = loop) }
+                            }
                         },
                         onPlayElsewhere = if (isAudio || !externalPlayerAvailable) null else onPlayElsewhere,
                         onShare = onShare,
                         onDetails = onDetails,
+                        onInfo = if (infoButton) onDetails else null,
                         onEdit = onEdit,
                         onCycleAudioTrack = if (trackCounts.first > 1) ({ cycleTrack(exoPlayer, androidx.media3.common.C.TRACK_TYPE_AUDIO, allowOff = false) }) else null,
                         onCycleSubtitles = if (trackCounts.second > 0) ({ cycleTrack(exoPlayer, androidx.media3.common.C.TRACK_TYPE_TEXT, allowOff = true) }) else null,
-                        onEnterPip = enterPip,
+                        backgroundPlay = config.autoBackgroundPlay,
+                        // Private folders never play in the background: no switch there.
+                        onToggleBackgroundPlay = if (isEncryptedVideo) null else ({
+                            onUpdatePlayerConfig { it.copy(autoBackgroundPlay = !it.autoBackgroundPlay) }
+                        }),
+                        onRotateScreen = activity?.let { a -> { rotationKeeper.rotate(a) } },
+                        onOpenShortcuts = { showShortcuts = true },
+                        onOpenButtonsPosition = {
+                            editingWasPlaying[0] = exoPlayer.playWhenReady
+                            exoPlayer.pause()
+                            editingButtons = config.controlButtonsX to config.controlButtonsY
+                        },
                         belowTitle = topArrow,
                         modifier = Modifier.align(Alignment.TopCenter),
                     )
 
-                    VideoPlayerCenterControls(
-                        isPlaying = playerState.isPlaying,
-                        isBuffering = playerState.isBuffering,
-                        hasPrevious = hasPrevious,
-                        hasNext = hasNext,
-                        onPlayPause = {
-                            if (playerState.isPlaying) {
-                                exoPlayer.pause()
-                            } else {
-                                if (playerState.isEnded) {
-                                    exoPlayer.seekTo(0L)
-                                }
-                                exoPlayer.play()
-                            }
-                        },
-                        onPrevious = onPrevious,
-                        onNext = onNext,
-                        modifier = Modifier.align(Alignment.Center),
-                    )
+                    // While edited, the buttons are drawn by the editor (over its tap-to-finish layer).
+                    if (editingButtons == null) {
+                        centerControls(
+                            Modifier.align(
+                                BiasAlignment(positionToBias(config.controlButtonsX), positionToBias(config.controlButtonsY)),
+                            ),
+                        )
+                    }
 
                     VideoPlayerBottomControls(
                         playerState = playerState,
@@ -673,9 +731,9 @@ fun AlexetVideoPlayer(
                         onToggleLock = {
                             playerState.controlsLocked = !playerState.controlsLocked
                         },
-                        onOpenScaleSheet = if (isAudio) null else ({ showScaleSheet = true }),
                         sponsorSegments = shownSegments,
                         actionCenter = bottomArrow,
+                        onEnterPip = enterPip,
                         modifier = Modifier.align(Alignment.BottomCenter),
                     )
                 }
@@ -706,6 +764,21 @@ fun AlexetVideoPlayer(
                     )
                 }
             }
+
+            editingButtons?.let { (x, y) ->
+                PlayerButtonsPositionEditor(
+                    x = x,
+                    y = y,
+                    onChange = { newX, newY -> editingButtons = newX to newY },
+                    onFinish = {
+                        onUpdatePlayerConfig { it.copy(controlButtonsX = x, controlButtonsY = y) }
+                        editingButtons = null
+                        if (editingWasPlaying[0]) exoPlayer.play()
+                        editingWasPlaying[0] = false
+                    },
+                    preview = { placement -> centerControls(placement) },
+                )
+            }
         }
     }
 
@@ -716,8 +789,14 @@ fun AlexetVideoPlayer(
             onSelectSpeed = { newSpeed ->
                 playerState.playbackSpeed = newSpeed
                 exoPlayer.playbackParameters = PlaybackParameters(newSpeed)
+                if (rememberState) onUpdatePlayerConfig { it.copy(rememberedSpeed = newSpeed) }
             },
             onDismiss = { showSpeedSheet = false },
+            // Slider steps: played at once, saved when the slide ends.
+            onSlideSpeed = { newSpeed ->
+                playerState.playbackSpeed = newSpeed
+                exoPlayer.playbackParameters = PlaybackParameters(newSpeed)
+            },
         )
     }
 
@@ -726,8 +805,57 @@ fun AlexetVideoPlayer(
             currentScale = playerState.contentScale,
             onSelectScale = { newScale ->
                 playerState.contentScale = newScale
+                if (rememberState) onUpdatePlayerConfig { it.copy(rememberedContentScale = newScale.name) }
             },
             onDismiss = { showScaleSheet = false },
+        )
+    }
+
+    if (showShortcuts && !inPip) {
+        PlayerShortcutsDialog(
+            shortcuts = config.visibleShortcuts,
+            onChange = { shortcuts -> onUpdatePlayerConfig { it.copy(visibleShortcuts = shortcuts) } },
+            onDismiss = { showShortcuts = false },
+        )
+    }
+}
+
+/**
+ * What a gesture shows while it goes on (seek bubble, volume or brightness bar, swipe seek time,
+ * long press speed). Its own composable: these change with every move of the finger, and read in
+ * the player they recomposed all of it.
+ */
+@Composable
+private fun BoxScope.GestureFeedbackOverlays(playerState: VideoPlayerState, longPressSpeed: Float) {
+    playerState.activeDoubleTap?.let { feedback ->
+        DoubleTapSeekBubble(
+            feedback = feedback,
+            modifier = Modifier
+                .align(if (feedback.side == SeekSide.LEFT) Alignment.CenterStart else Alignment.CenterEnd)
+                .padding(horizontal = 48.dp),
+        )
+    }
+
+    playerState.activeVerticalGesture?.let { feedback ->
+        VerticalProgressIndicatorView(
+            feedback = feedback,
+            modifier = Modifier
+                .align(if (feedback.type == VerticalGestureType.BRIGHTNESS) Alignment.CenterStart else Alignment.CenterEnd)
+                .padding(horizontal = 32.dp),
+        )
+    }
+
+    playerState.swipeSeek?.let { feedback ->
+        SwipeSeekLabel(feedback = feedback, modifier = Modifier.align(Alignment.Center))
+    }
+
+    if (playerState.isLongPressSpeedActive) {
+        LongPressSpeedPill(
+            speed = longPressSpeed,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(top = 16.dp),
         )
     }
 }

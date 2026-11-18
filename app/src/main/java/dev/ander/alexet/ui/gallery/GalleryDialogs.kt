@@ -36,6 +36,7 @@ import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.IconButton
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -87,7 +88,7 @@ import dev.ander.alexet.data.SortOrder
 import dev.ander.alexet.data.SortSpec
 import androidx.compose.material3.Checkbox
 
-enum class AlbumPickMode { COPY, MOVE, RESTORE }
+enum class AlbumPickMode { COPY, MOVE, RESTORE, EXTRACT }
 
 fun formatFileSize(bytes: Long): String {
     if (bytes <= 0) return "0 B"
@@ -569,6 +570,10 @@ fun RenameFolderDialog(
     currentName: String,
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit,
+    /** For a new folder: its own title, button and a line under the name; the given name is accepted as is. */
+    title: String? = null,
+    confirmLabel: String? = null,
+    note: String? = null,
 ) {
     var textValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(
@@ -581,7 +586,8 @@ fun RenameFolderDialog(
     val focusRequester = remember { FocusRequester() }
     val trimmed = textValue.text.trim()
     val isValid = trimmed.isNotEmpty() &&
-        trimmed != currentName &&
+        (trimmed != currentName || title != null) &&
+        trimmed != "." && trimmed != ".." &&
         !trimmed.contains('/') &&
         !trimmed.contains('\\') &&
         !trimmed.contains(':') &&
@@ -611,7 +617,7 @@ fun RenameFolderDialog(
                     .padding(horizontal = 24.dp, vertical = 20.dp),
             ) {
                 Text(
-                    text = stringResource(R.string.rename_folder_title),
+                    text = title ?: stringResource(R.string.rename_folder_title),
                     style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
@@ -625,6 +631,14 @@ fun RenameFolderDialog(
                         .fillMaxWidth()
                         .focusRequester(focusRequester),
                 )
+                if (note != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = note,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Spacer(Modifier.height(20.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -639,7 +653,7 @@ fun RenameFolderDialog(
                         onClick = { if (isValid) onConfirm(trimmed) },
                         enabled = isValid,
                     ) {
-                        Text(stringResource(R.string.rename))
+                        Text(confirmLabel ?: stringResource(R.string.rename))
                     }
                 }
             }
@@ -658,6 +672,8 @@ fun AlbumPickerDialog(
     onOtherFolder: () -> Unit,
     onRevealHidden: (Boolean) -> Unit,
     onDismiss: () -> Unit,
+    /** A "New folder" button: the files go into a folder made for them. */
+    onNewFolder: (() -> Unit)? = null,
 ) {
     var showHidden by remember { mutableStateOf(showingHidden) }
     var selectedId by remember { mutableStateOf<Long?>(null) }
@@ -776,6 +792,13 @@ fun AlbumPickerDialog(
                 ) {
                     TextButton(onClick = onOtherFolder) {
                         Text(stringResource(R.string.other_folder))
+                    }
+                    if (onNewFolder != null) {
+                        TextButton(onClick = onNewFolder) {
+                            Icon(Icons.Rounded.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(stringResource(R.string.new_folder))
+                        }
                     }
                     Spacer(Modifier.weight(1f))
                     TextButton(onClick = onDismiss) {

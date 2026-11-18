@@ -42,8 +42,8 @@ import androidx.compose.material.icons.rounded.BrightnessMedium
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.FitScreen
 import androidx.compose.material.icons.rounded.Forward10
-import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.Headset
+import androidx.compose.material.icons.rounded.HeadsetOff
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
@@ -56,12 +56,14 @@ import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RepeatOne
 import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.ScreenRotation
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Subtitles
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -120,8 +122,18 @@ fun VideoPlayerTopControls(
     onCycleSubtitles: (() -> Unit)? = null,
     /** Centred right under the title row. */
     belowTitle: (@Composable () -> Unit)? = null,
-    /** Shrinks the video into the small window over other apps; null when that is off. */
-    onEnterPip: (() -> Unit)? = null,
+    /** An (i) button after the shortcuts that opens the details; null shows none. */
+    onInfo: (() -> Unit)? = null,
+    /** Whether the video goes on playing after the app is left. */
+    backgroundPlay: Boolean = false,
+    /** Turns background play on or off; null where it doesn't apply (private folders). */
+    onToggleBackgroundPlay: (() -> Unit)? = null,
+    /** Turns the screen between portrait and landscape; null when there is no window to turn. */
+    onRotateScreen: (() -> Unit)? = null,
+    /** Opens the "Shortcuts" dialog. */
+    onOpenShortcuts: (() -> Unit)? = null,
+    /** Opens the editor of the playback buttons' position. */
+    onOpenButtonsPosition: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
@@ -158,18 +170,6 @@ fun VideoPlayerTopControls(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-
-            if (onEnterPip != null) {
-                FilledTonalIconButton(
-                    onClick = onEnterPip,
-                    modifier = Modifier.size(40.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.PictureInPictureAlt,
-                        contentDescription = stringResource(R.string.pip_title),
-                    )
-                }
-            }
 
             // 3-dots Menu
             Box {
@@ -226,6 +226,26 @@ fun VideoPlayerTopControls(
                             },
                         )
                     }
+                    if (onOpenShortcuts != null) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.player_shortcuts)) },
+                            onClick = {
+                                menuExpanded = false
+                                onOpenShortcuts()
+                            },
+                            leadingIcon = { Icon(Icons.Rounded.Settings, contentDescription = null) },
+                        )
+                    }
+                    if (onOpenButtonsPosition != null) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.player_buttons_position)) },
+                            onClick = {
+                                menuExpanded = false
+                                onOpenButtonsPosition()
+                            },
+                            leadingIcon = { Icon(Icons.Rounded.Tune, contentDescription = null) },
+                        )
+                    }
                 }
             }
         }
@@ -241,7 +261,7 @@ fun VideoPlayerTopControls(
             it != PlayerShortcut.LOCK_CONTROLS && it != PlayerShortcut.PICTURE_IN_PICTURE
         }
 
-        if (topShortcuts.isNotEmpty()) {
+        if (topShortcuts.isNotEmpty() || onInfo != null) {
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -260,13 +280,24 @@ fun VideoPlayerTopControls(
                                 )
                             }
                         }
-                        PlayerShortcut.SCREEN_ROTATION, PlayerShortcut.VIDEO_CONTENT_SCALE -> if (onOpenScaleSheet != null) {
+                        PlayerShortcut.SCREEN_ROTATION -> if (onRotateScreen != null) {
+                            FilledTonalIconButton(
+                                onClick = onRotateScreen,
+                                modifier = Modifier.size(40.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.ScreenRotation,
+                                    contentDescription = stringResource(R.string.player_rotate_screen),
+                                )
+                            }
+                        }
+                        PlayerShortcut.VIDEO_CONTENT_SCALE -> if (onOpenScaleSheet != null) {
                             FilledTonalIconButton(
                                 onClick = onOpenScaleSheet,
                                 modifier = Modifier.size(40.dp),
                             ) {
                                 Icon(
-                                    imageVector = Icons.Rounded.ScreenRotation,
+                                    imageVector = Icons.Rounded.AspectRatio,
                                     contentDescription = stringResource(R.string.video_scale),
                                 )
                             }
@@ -278,7 +309,7 @@ fun VideoPlayerTopControls(
                             ) {
                                 Icon(
                                     imageVector = Icons.Rounded.Audiotrack,
-                                    contentDescription = null,
+                                    contentDescription = stringResource(R.string.player_audio_track),
                                 )
                             }
                         }
@@ -289,7 +320,7 @@ fun VideoPlayerTopControls(
                             ) {
                                 Icon(
                                     imageVector = if (isLooping) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
-                                    contentDescription = null,
+                                    contentDescription = stringResource(R.string.player_loop),
                                 )
                             }
                         }
@@ -302,22 +333,33 @@ fun VideoPlayerTopControls(
                             ) {
                                 Icon(
                                     imageVector = Icons.Rounded.Subtitles,
-                                    contentDescription = null,
+                                    contentDescription = stringResource(R.string.player_subtitles),
                                 )
                             }
                         }
-                        PlayerShortcut.PLAY_IN_BACKGROUND -> if (onPlayElsewhere != null) {
+                        PlayerShortcut.PLAY_IN_BACKGROUND -> if (onToggleBackgroundPlay != null) {
                             FilledTonalIconButton(
-                                onClick = onPlayElsewhere,
+                                onClick = onToggleBackgroundPlay,
                                 modifier = Modifier.size(40.dp),
                             ) {
                                 Icon(
-                                    imageVector = Icons.Rounded.Headset,
-                                    contentDescription = null,
+                                    imageVector = if (backgroundPlay) Icons.Rounded.Headset else Icons.Rounded.HeadsetOff,
+                                    contentDescription = stringResource(R.string.background_play_title),
                                 )
                             }
                         }
                         else -> Unit
+                    }
+                }
+                if (onInfo != null) {
+                    FilledTonalIconButton(
+                        onClick = onInfo,
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Info,
+                            contentDescription = stringResource(R.string.details),
+                        )
                     }
                 }
             }
@@ -398,10 +440,11 @@ fun VideoPlayerBottomControls(
     config: AnderLineConfig,
     onSeek: (Long) -> Unit,
     onToggleLock: () -> Unit,
-    onOpenScaleSheet: (() -> Unit)?,
     sponsorSegments: List<SponsorSegment> = emptyList(),
     /** Centred in the action row under the seek bar. */
     actionCenter: (@Composable () -> Unit)? = null,
+    /** Shrinks the video into the small window over other apps; null when that is off. */
+    onEnterPip: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -417,39 +460,19 @@ fun VideoPlayerBottomControls(
             modifier = Modifier.padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.clickable { playerState.showRemainingTime = !playerState.showRemainingTime },
-            ) {
-                Text(
-                    text = if (playerState.showRemainingTime) playerState.remainingFormatted else playerState.positionFormatted,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White,
-                )
-                Text(
-                    text = " / ",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White,
-                )
-                Text(
-                    text = playerState.durationFormatted,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White,
-                )
-            }
+            PlayerTimeLabel(playerState)
             Spacer(modifier = Modifier.weight(1f))
         }
 
         // Custom Material You Seekbar matching Next Player
-        MaterialYouPlayerSeekbar(
-            positionMs = playerState.positionMs,
-            durationMs = playerState.durationMs,
+        PlayerStateSeekbar(
+            playerState = playerState,
             onSeek = onSeek,
             sponsorSegments = sponsorSegments,
             modifier = Modifier.fillMaxWidth(),
         )
 
-        // Bottom Action Row (Lock on start, Aspect ratio / PiP on end)
+        // Bottom Action Row (Lock on start; the aspect ratio is a top shortcut)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -475,23 +498,66 @@ fun VideoPlayerBottomControls(
                 }
             }
 
-            if (onOpenScaleSheet != null && (PlayerShortcut.VIDEO_CONTENT_SCALE in config.visibleShortcuts ||
-                PlayerShortcut.PICTURE_IN_PICTURE in config.visibleShortcuts)
-            ) {
+            if (onEnterPip != null) {
                 FilledTonalIconButton(
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
                         .size(40.dp),
-                    onClick = onOpenScaleSheet,
+                    onClick = onEnterPip,
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.Fullscreen,
-                        contentDescription = stringResource(R.string.video_scale),
+                        imageVector = Icons.Rounded.PictureInPictureAlt,
+                        contentDescription = stringResource(R.string.pip_title),
                     )
                 }
             }
         }
     }
+}
+
+/**
+ * Position / duration, tap to show the time left. Its own composable: the position changes every
+ * 200 ms while playing, and read in the bottom controls it recomposed all of them.
+ */
+@Composable
+private fun PlayerTimeLabel(playerState: VideoPlayerState) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.clickable { playerState.showRemainingTime = !playerState.showRemainingTime },
+    ) {
+        Text(
+            text = if (playerState.showRemainingTime) playerState.remainingFormatted else playerState.positionFormatted,
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color.White,
+        )
+        Text(
+            text = " / ",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color.White,
+        )
+        Text(
+            text = playerState.durationFormatted,
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color.White,
+        )
+    }
+}
+
+/** The seek bar, reading the position here so only it recomposes as the video plays. */
+@Composable
+private fun PlayerStateSeekbar(
+    playerState: VideoPlayerState,
+    onSeek: (Long) -> Unit,
+    sponsorSegments: List<SponsorSegment>,
+    modifier: Modifier = Modifier,
+) {
+    MaterialYouPlayerSeekbar(
+        positionMs = playerState.positionMs,
+        durationMs = playerState.durationMs,
+        onSeek = onSeek,
+        sponsorSegments = sponsorSegments,
+        modifier = modifier,
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -516,6 +582,8 @@ fun MaterialYouPlayerSeekbar(
     val primaryColor = MaterialTheme.colorScheme.primary
     val trackHeight = 8.dp
     val trackThumbGapWidth = 12.dp
+    // Both track parts are drawn with this one path (a new one twice per frame before).
+    val trackPath = remember { Path() }
 
     Slider(
         value = sliderValue,
@@ -559,6 +627,7 @@ fun MaterialYouPlayerSeekbar(
                 // Inactive track (right side)
                 if (rightStart < size.width) {
                     drawRoundedRect(
+                        path = trackPath,
                         offset = Offset(rightStart, 0f),
                         size = Size(size.width - rightStart, size.height),
                         color = primaryColor.copy(alpha = disabledAlpha),
@@ -570,6 +639,7 @@ fun MaterialYouPlayerSeekbar(
                 // Active track (left side)
                 if (leftEnd > 0f) {
                     drawRoundedRect(
+                        path = trackPath,
                         offset = Offset(0f, 0f),
                         size = Size(leftEnd, size.height),
                         color = primaryColor,
@@ -595,6 +665,7 @@ private fun Modifier.sponsorSegments(segments: List<SponsorSegment>, durationMs:
 }
 
 private fun DrawScope.drawRoundedRect(
+    path: Path,
     offset: Offset,
     size: Size,
     color: Color,
@@ -610,12 +681,9 @@ private fun DrawScope.drawRoundedRect(
         bottomRight = endCorner,
         bottomLeft = startCorner,
     )
-    drawPath(
-        path = Path().apply {
-            addRoundRect(track)
-        },
-        color = color,
-    )
+    path.reset()
+    path.addRoundRect(track)
+    drawPath(path = path, color = color)
 }
 
 @Composable
@@ -718,6 +786,27 @@ fun DoubleTapSeekBubble(
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
             )
         }
+    }
+}
+
+/** The jump of a sideways seek swipe and where it lands, like Next Player: "+00:15" over "[12:34]". */
+@Composable
+fun SwipeSeekLabel(
+    feedback: SwipeSeekFeedback,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.88f),
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+    ) {
+        Text(
+            text = swipeSeekLabel(feedback.amountMs, feedback.targetMs),
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+        )
     }
 }
 

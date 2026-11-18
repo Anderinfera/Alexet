@@ -9,7 +9,8 @@ import dev.ander.alexet.data.SmartIndexScope
 /** What an indexed row was made from: a changed file is indexed again. */
 data class IndexedKey(val sizeBytes: Long, val dateModifiedMs: Long)
 
-class SmartIndexPlan(val toIndex: List<GalleryMedia>, val toDelete: List<Long>)
+/** [eligible]: how many of the photos can be indexed ([SmartIndexPlanner.isEligible]). */
+class SmartIndexPlan(val toIndex: List<GalleryMedia>, val toDelete: List<Long>, val eligible: Int)
 
 /** The folders (bucket ids, an album's id) the index covers. */
 data class SmartFolderFilter(
@@ -71,6 +72,6 @@ object SmartIndexPlanner {
         }
         toIndex.sortByDescending { it.capturedAtMs }
         val toDelete = indexed.keys.filter { it !in live }
-        return SmartIndexPlan(toIndex, toDelete)
+        return SmartIndexPlan(toIndex, toDelete, eligible.size)
     }
 }

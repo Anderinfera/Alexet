@@ -165,6 +165,12 @@ class DownloadTracker(
         return synchronized(this) { modifiedLocked(path, snap) }
     }
 
+    /** [onModified] with the size the caller already read ([size] null: not a file or gone). */
+    fun onModified(path: String, size: Long?): Boolean {
+        if (!DownloadMediaFilter.isMediaDownload(path)) return false
+        return synchronized(this) { modifiedLocked(path, size) }
+    }
+
     private fun modifiedLocked(path: String, snap: Long?): Boolean {
         val key = DownloadMediaFilter.normalizePath(path)
         val now = nowMs()

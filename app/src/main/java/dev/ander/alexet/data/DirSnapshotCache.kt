@@ -99,5 +99,15 @@ internal class DirSnapshotCache<T : Any>(
         } catch (e: Exception) {
             null
         }
+
+        /**
+         * [file]'s type, size and date in one stat, following links like [File.isFile] and
+         * [File.length] do; null when it is gone or unreadable (where those give false / 0).
+         */
+        fun attributesOf(file: File): BasicFileAttributes? = try {
+            Files.readAttributes(file.toPath(), BasicFileAttributes::class.java)
+        } catch (e: Exception) {
+            null
+        }
     }
 }

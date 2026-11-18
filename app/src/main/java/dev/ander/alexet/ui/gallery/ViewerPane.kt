@@ -177,6 +177,11 @@ fun ViewerPane(
     allMedia: List<GalleryMedia> = emptyList(),
     onStripExif: (GalleryMedia) -> Unit = {},
     playerConfig: dev.ander.alexet.integration.AnderLineConfig = dev.ander.alexet.integration.AnderLineConfig(),
+    /** A video tapped with "Player like an external app" on: it plays at once, a sideways swipe seeks and the pages do not swipe. */
+    playerMode: Boolean = false,
+    /** "Player like an external app": speed, loop and screen proportions are kept in [playerConfig] for every video. */
+    rememberPlayerState: Boolean = false,
+    onUpdatePlayerConfig: ((dev.ander.alexet.integration.AnderLineConfig) -> dev.ander.alexet.integration.AnderLineConfig) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val effectiveMedia = remember(media) {
@@ -201,6 +206,12 @@ fun ViewerPane(
     val view = LocalView.current
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    // The player's rotate button turns the window; it turns back when the viewer closes.
+    val orientationKeeper = remember { dev.ander.alexet.ui.player.ScreenOrientationKeeper() }
+    val viewerContext = androidx.compose.ui.platform.LocalContext.current
+    DisposableEffect(Unit) {
+        onDispose { orientationKeeper.restore(viewerContext.findViewerActivity()) }
+    }
 
     BackHandler(enabled = isCompareMode || showDetails || showFilmstrip) {
         when {
@@ -357,7 +368,12 @@ fun ViewerPane(
                 autoplayGifs = autoplayGifs,
                 gifPlayingStates = gifPlayingStates,
                 playerConfig = playerConfig,
-                videoTopArrow = topArrow.takeIf { !showDetails },
+                playerMode = playerMode,
+                rememberPlayerState = rememberPlayerState,
+                onUpdatePlayerConfig = onUpdatePlayerConfig,
+                orientationKeeper = orientationKeeper,
+                // Player mode has an (i) button among the player's buttons instead.
+                videoTopArrow = topArrow.takeIf { !showDetails && !playerMode },
                 videoBottomArrow = bottomArrow.takeIf { !showFilmstrip },
             )
 
@@ -424,14 +440,17 @@ fun ViewerPane(
                             }
                             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                                 if (current.bucketId != dev.ander.alexet.data.AlbumIds.TRASH) {
-                                    DropdownMenuItem(
-                                        text = { Text(stringResource(if (current.isVideo) R.string.edit_video else R.string.edit_photo)) },
-                                        onClick = {
-                                            menu = false
-                                            onEdit(current)
-                                        },
-                                        leadingIcon = { Icon(Icons.Rounded.Edit, contentDescription = null) },
-                                    )
+                                    // Other files (apk, pdf...) have no editor.
+                                    if (!current.isOtherFile) {
+                                        DropdownMenuItem(
+                                            text = { Text(stringResource(if (current.isVideo) R.string.edit_video else R.string.edit_photo)) },
+                                            onClick = {
+                                                menu = false
+                                                onEdit(current)
+                                            },
+                                            leadingIcon = { Icon(Icons.Rounded.Edit, contentDescription = null) },
+                                        )
+                                    }
                                     if (dev.ander.alexet.data.QuickEdit.supports(current)) {
                                         DropdownMenuItem(
                                             text = { Text(stringResource(R.string.quick_edit)) },
@@ -523,8 +542,9 @@ fun ViewerPane(
                 }
             }
 
-            // Side Navigation Arrows (instant scrollToPage without animation)
-            if (showNavArrows && chromeVisible && effectiveMedia.size > 1) {
+            // Side Navigation Arrows (instant scrollToPage without animation); the player's own
+            // previous / next do this in player mode.
+            if (showNavArrows && !playerMode && chromeVisible && effectiveMedia.size > 1) {
                 AnimatedVisibility(
                     visible = pagerState.settledPage > 0,
                     enter = fadeIn(),
@@ -784,6 +804,10 @@ private fun MediaPager(
     autoplayGifs: Boolean = true,
     gifPlayingStates: Map<Long, Boolean> = emptyMap(),
     playerConfig: dev.ander.alexet.integration.AnderLineConfig = dev.ander.alexet.integration.AnderLineConfig(),
+    playerMode: Boolean = false,
+    rememberPlayerState: Boolean = false,
+    onUpdatePlayerConfig: ((dev.ander.alexet.integration.AnderLineConfig) -> dev.ander.alexet.integration.AnderLineConfig) -> Unit = {},
+    orientationKeeper: dev.ander.alexet.ui.player.ScreenOrientationKeeper? = null,
     onZoomedChange: (Boolean) -> Unit = {},
     videoTopArrow: (@Composable () -> Unit)? = null,
     videoBottomArrow: (@Composable () -> Unit)? = null,
@@ -813,7 +837,8 @@ private fun MediaPager(
         modifier = Modifier.fillMaxSize().background(Color.Black),
         key = { media.getOrNull(it)?.id ?: it },
         beyondViewportPageCount = 1,
-        userScrollEnabled = !isCurrentZoomed,
+        // Player mode: a sideways swipe seeks; the buttons, arrows and filmstrip change the video.
+        userScrollEnabled = !isCurrentZoomed && !playerMode,
     ) { page ->
         val item = media.getOrNull(page) ?: return@HorizontalPager
         if (item.isVideo || item.isAudio) {
@@ -828,7 +853,7 @@ private fun MediaPager(
                     onPlayElsewhere = { onPlayVideo(item) },
                     onShare = { onShare(item) },
                     onDetails = onShowDetails,
-                    onEdit = if (item.isAudio) null else ({ onEdit(item) }),
+                    onEdit = if (item.isAudio || item.isOtherFile) null else ({ onEdit(item) }),
                     hasPrevious = page > 0,
                     hasNext = page < media.size - 1,
                     onPrevious = {
@@ -842,6 +867,12 @@ private fun MediaPager(
                         }
                     },
                     playerConfig = playerConfig,
+                    autoplay = playerMode,
+                    horizontalSeek = playerMode,
+                    infoButton = playerMode,
+                    rememberState = rememberPlayerState,
+                    onUpdatePlayerConfig = onUpdatePlayerConfig,
+                    orientationKeeper = orientationKeeper,
                     topArrow = videoTopArrow,
                     bottomArrow = videoBottomArrow,
                     modifier = Modifier.fillMaxSize(),
@@ -1299,10 +1330,10 @@ private fun TopDetailsPanel(
             .fillMaxSize()
             .zIndex(100f),
     ) {
+        // No dimming over the photo: a tap beside the panel still closes it.
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.5f))
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
@@ -1760,3 +1791,9 @@ private fun CompareMediaPicker(
  */
 private fun filmstripCenter(state: androidx.compose.foundation.lazy.LazyListState): Int =
     (state.layoutInfo.viewportStartOffset + state.layoutInfo.viewportEndOffset) / 2
+
+private tailrec fun android.content.Context.findViewerActivity(): android.app.Activity? = when (this) {
+    is android.app.Activity -> this
+    is android.content.ContextWrapper -> baseContext.findViewerActivity()
+    else -> null
+}

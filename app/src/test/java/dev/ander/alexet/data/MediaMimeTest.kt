@@ -26,6 +26,20 @@ class MediaMimeTest {
     }
 
     @Test
+    fun videoNameCheckMatchesMimeOf() {
+        val names = listOf(
+            "clip.mp4", "clip.MP4", "clip.Mkv", "a.b.webm", ".mp4", "mp4", "clip.", "clip", "",
+            "clip.mp4.jpg", "photo.jpg.mov", "clip.ts", "clip.TS", "x.3gp", "x.3GP", "x.m4v", "x.mpeg", "x.mpg",
+            "x.avi", "x.avİ", "x.AVİ", "x.tſ", "x.mKv", "x.mp4 ", "x .mp4", "x.mp4",
+            "x.heic", "x.tiff", "x.dng", "x.𐐀mp4", "x.mp", "x.p4", "x..mp4", "x.mp4.",
+        )
+        for (name in names) {
+            val expected = NomediaScanner.mimeOf(name)?.startsWith("video/") == true
+            assertEquals(name, expected, NomediaScanner.isVideoName(name))
+        }
+    }
+
+    @Test
     fun fileNotNamedAsMediaKeepsSystemType() {
         assertEquals("application/pdf", NomediaScanner.mediaMimeOf("application/pdf", "doc.pdf"))
         assertEquals("application/binary", NomediaScanner.mediaMimeOf("application/binary", "data.bin"))

@@ -49,7 +49,8 @@ class MediaIndexStore(context: Context) {
         helper.setWriteAheadLoggingEnabled(true)
     }
 
-    fun loadAll(): List<GalleryMedia> {
+    /** [onMimeCorrected] is called when a stored type was corrected while reading (the row differs from what is loaded). */
+    fun loadAll(onMimeCorrected: (() -> Unit)? = null): List<GalleryMedia> {
         val out = ArrayList<GalleryMedia>()
         runCatching {
             helper.readableDatabase.query(
@@ -82,12 +83,15 @@ class MediaIndexStore(context: Context) {
                 while (c.moveToNext()) {
                     val parsed = runCatching { Uri.parse(c.getString(uri)) }.getOrNull() ?: continue
                     val displayName = c.getString(name).orEmpty()
+                    val storedMime = c.getString(mime)
+                    // Also for files saved before wrong system types were corrected.
+                    val mimeType = NomediaScanner.mediaMimeOf(storedMime, displayName).orEmpty()
+                    if (onMimeCorrected != null && mimeType != storedMime) onMimeCorrected()
                     out += GalleryMedia(
                         id = c.getLong(id),
                         uri = parsed,
                         displayName = displayName,
-                        // Also for files saved before wrong system types were corrected.
-                        mimeType = NomediaScanner.mediaMimeOf(c.getString(mime), displayName).orEmpty(),
+                        mimeType = mimeType,
                         dateTakenMs = c.getLong(taken),
                         dateModifiedMs = c.getLong(modified),
                         dateAddedMs = c.getLong(added),
@@ -199,6 +203,45 @@ class MediaIndexStore(context: Context) {
             val stmt = db.compileStatement(UPSERT)
             for (item in items) bindAndInsert(stmt, item)
             stmt.close()
+            generations.forEach { (volume, gen) -> putMeta(db, "$KEY_GENERATION_PREFIX$volume", gen) }
+            putMeta(db, KEY_LAST_FULL, fullReconcileAt)
+        }
+    }
+
+    /**
+     * Same end state as [replaceAll] with [keepIds] as the new id set, written as a difference in
+     * one transaction: rows whose id is not in [keepIds] are deleted, [upserts] (the rows that
+     * changed) are written, the rest is left untouched.
+     */
+    fun replaceByDiff(
+        upserts: List<GalleryMedia>,
+        keepIds: Set<Long>,
+        generations: Map<String, Long>,
+        fullReconcileAt: Long,
+    ) {
+        val db = helper.writableDatabase
+        transaction(db) {
+            // Read from the table, not from the caller's mirror, so no stale row can outlive this.
+            val stale = ArrayList<Long>()
+            db.rawQuery("SELECT id FROM media", null).use { c ->
+                while (c.moveToNext()) {
+                    val id = c.getLong(0)
+                    if (id !in keepIds) stale += id
+                }
+            }
+            if (stale.isNotEmpty()) {
+                val del = db.compileStatement("DELETE FROM media WHERE id = ?")
+                for (id in stale) {
+                    del.bindLong(1, id)
+                    del.executeUpdateDelete()
+                }
+                del.close()
+            }
+            if (upserts.isNotEmpty()) {
+                val stmt = db.compileStatement(UPSERT)
+                for (item in upserts) bindAndInsert(stmt, item)
+                stmt.close()
+            }
             generations.forEach { (volume, gen) -> putMeta(db, "$KEY_GENERATION_PREFIX$volume", gen) }
             putMeta(db, KEY_LAST_FULL, fullReconcileAt)
         }

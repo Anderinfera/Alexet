@@ -136,8 +136,9 @@ private fun PlayerPreviewCanvas(
         PlayerPreviewKind.BACKGROUND_PLAY -> 0.7f
         else -> 0.5f
     }
+    val onScreen = rememberPreviewOnScreen()
     // Read only while drawing: the frames redraw the canvas without recomposing the row.
-    val time: State<Float>? = if (active && !LocalLightMode.current) {
+    val time: State<Float>? = if (active && !LocalLightMode.current && onScreen.value) {
         key(cycleMs) {
             rememberInfiniteTransition(label = "playerPreview").animateFloat(
                 initialValue = 0f,
@@ -168,7 +169,8 @@ private fun PlayerPreviewCanvas(
         modifier
             .size(width = 56.dp, height = 40.dp)
             .graphicsLayer { alpha = if (active) 1f else 0.45f }
-            .clip(shape),
+            .clip(shape)
+            .then(onScreen.modifier),
     ) {
         val t = time?.value ?: stillFrame
         drawRect(PreviewScreen)

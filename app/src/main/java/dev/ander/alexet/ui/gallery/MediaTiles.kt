@@ -5,7 +5,6 @@ import android.os.SystemClock
 import dev.ander.alexet.ui.components.LocalLightMode
 import dev.ander.alexet.ui.components.AnimatedVisibility
 import androidx.compose.animation.core.Spring
-import dev.ander.alexet.ui.components.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -71,13 +70,11 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
@@ -162,6 +159,9 @@ fun MediaTiles(
         if (!marqueeActive) liveSelectedIds = selectedIds
     }
     val selectedIdSet = remember(liveSelectedIds) { liveSelectedIds.toSet() }
+    // Tiles read the set through this State: captured as a value, every selection change
+    // recomposed every visible tile.
+    val selSet = rememberUpdatedState(selectedIdSet)
     if (safeMedia.isEmpty()) {
         Column(modifier.fillMaxSize()) {
             if (isSecureFolder && onDecryptFolderPermanently != null) {
@@ -212,7 +212,13 @@ fun MediaTiles(
                 }
             }
             Box(Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
-                if (isLoading) {
+                if (isLoading && LocalLightMode.current) {
+                    // Light mode: a plain spinner instead of the morphing shapes.
+                    androidx.compose.material3.CircularProgressIndicator(
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(40.dp),
+                    )
+                } else if (isLoading) {
                     LoadingIndicator(
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(40.dp),
@@ -230,11 +236,16 @@ fun MediaTiles(
     }
 
     var coords by remember { mutableStateOf<LayoutCoordinates?>(null) }
-    val itemBounds = remember { mutableMapOf<Long, Rect>() }
+    val itemBounds = remember { TileBounds() }
     val mediaIds = remember(safeMedia) { safeMedia.map { it.id }.toSet() }
     val orderedIds = remember(safeMedia) { safeMedia.map { it.id } }
-    val orderIndexById = remember(orderedIds) {
-        orderedIds.withIndex().associate { it.value to (it.index + 1) }
+    // Order numbers are shown only while reordering.
+    val orderIndexById = remember(orderedIds, contentOrderMode) {
+        if (contentOrderMode) {
+            orderedIds.withIndex().associate { it.value to (it.index + 1) }
+        } else {
+            emptyMap<Long, Int>()
+        }
     }
     val haptic = LocalHapticFeedback.current
     var draggingId by remember { mutableStateOf<Long?>(null) }
@@ -245,7 +256,7 @@ fun MediaTiles(
     var lastOrderSwapUptime by remember { mutableLongStateOf(0L) }
     var gridHostCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
     val density = LocalDensity.current
-    SideEffect { itemBounds.keys.retainAll(mediaIds) }
+    SideEffect { itemBounds.retainAll(mediaIds) }
     val start = rememberUpdatedState(onTwoFingerStart)
     val drag = rememberUpdatedState(onTwoFingerDrag)
     val end = rememberUpdatedState(onTwoFingerEnd)
@@ -336,7 +347,7 @@ fun MediaTiles(
 
     LaunchedEffect(albumId, safeMedia, forceScrollToTopOnNewContent) {
         val currentFirstId = safeMedia.firstOrNull()?.id
-        val currentIds = safeMedia.map { it.id }.toSet()
+        val currentIds = mediaIds
         val prevSet = previousMediaIdsSet
         val prevFirstId = previousFirstMediaId
 
@@ -401,7 +412,8 @@ fun MediaTiles(
             // bad hit-test cannot throw the item across the whole folder.
             val from = dragFromIndexRef.intValue
             if (from < 0) continue
-            val target = itemBounds.entries
+            val bounds = itemBounds.inWindow()
+            val target = bounds.entries
                 .filter { (bid, _) -> bid != id }
                 .minByOrNull { (_, rect) ->
                     val cx = (rect.left + rect.right) / 2f
@@ -423,7 +435,7 @@ fun MediaTiles(
             val cols = columns.coerceAtLeast(1)
             val indexDelta = kotlin.math.abs(toIndex - from)
             val adjacent = indexDelta == 1 || indexDelta == cols
-            val slot = itemBounds[id]
+            val slot = bounds[id]
             if (adjacent) {
                 val fromRect = slot ?: continue
                 val fromCx = (fromRect.left + fromRect.right) / 2f
@@ -629,9 +641,10 @@ fun MediaTiles(
                                     if (aborted == true) return@awaitEachGesture
                                     val host = gridHostCoords ?: return@awaitEachGesture
                                     val originWindow = host.localToWindow(origin)
-                                    val hit = itemBounds.entries.firstOrNull { (_, rect) ->
+                                    val bounds = itemBounds.inWindow()
+                                    val hit = bounds.entries.firstOrNull { (_, rect) ->
                                         rect.contains(originWindow)
-                                    } ?: itemBounds.entries.minByOrNull { (_, rect) ->
+                                    } ?: bounds.entries.minByOrNull { (_, rect) ->
                                         val cx = (rect.left + rect.right) / 2f
                                         val cy = (rect.top + rect.bottom) / 2f
                                         val dx = originWindow.x - cx
@@ -707,7 +720,9 @@ fun MediaTiles(
                 DisposableEffect(item.id) {
                     onDispose { itemBounds.remove(item.id) }
                 }
-                val selected = item.id in selectedIdSet
+                val selected by remember(item.id) {
+                    androidx.compose.runtime.derivedStateOf { item.id in selSet.value }
+                }
                 val orderNumber = if (contentOrderMode) orderIndexById[item.id] else null
                 val isDraggingItem = draggingId == item.id
                 val dimOthers = draggingId != null && !isDraggingItem
@@ -718,8 +733,10 @@ fun MediaTiles(
                 val downloading = download != null
                 // The edge between the panes moves: the tile follows it as it is, no own glide.
                 val paneResizing = LocalPaneResizing.current.value
-                val selectScale by animateFloatAsState(
+                // Most tiles are never selected: no animation is set up until one is.
+                val selectScale by dev.ander.alexet.ui.components.deferredAnimateFloatAsState(
                     targetValue = if (selected && !contentOrderMode) 0.92f else 1f,
+                    restingValue = 1f,
                     animationSpec = spring(
                         stiffness = Spring.StiffnessMediumLow,
                         dampingRatio = Spring.DampingRatioMediumBouncy,
@@ -743,7 +760,8 @@ fun MediaTiles(
                                 )
                             }
                         )
-                        .onGloballyPositioned { itemBounds[item.id] = it.boundsInWindow() }
+                        // Only the coordinates: the bounds are worked out when a gesture needs them.
+                        .onGloballyPositioned { itemBounds[item.id] = it }
                         .graphicsLayer {
                             scaleX = selectScale
                             scaleY = selectScale
@@ -760,7 +778,7 @@ fun MediaTiles(
                             if (!contentOrderMode) {
                                 Modifier.combinedClickable(
                                     onClick = {
-                                        if (selectedIdSet.isNotEmpty()) {
+                                        if (selSet.value.isNotEmpty()) {
                                             toggle.value(item.id)
                                         } else if (item.isVideo && videoDoubleClickToGallery) {
                                             val pending = pendingVideoTap
@@ -1057,7 +1075,29 @@ private fun DownloadTileOverlay(
                     .align(Alignment.TopEnd)
                     .padding(6.dp),
             )
-            if (progress != null) {
+            if (LocalLightMode.current) {
+                // Light mode: a straight bar, no wave moving every frame.
+                if (progress != null) {
+                    androidx.compose.material3.LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .padding(horizontal = 6.dp, vertical = 6.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.35f),
+                    )
+                } else {
+                    androidx.compose.material3.LinearProgressIndicator(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .padding(horizontal = 6.dp, vertical = 6.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.35f),
+                    )
+                }
+            } else if (progress != null) {
                 LinearWavyProgressIndicator(
                     progress = { progress },
                     modifier = Modifier

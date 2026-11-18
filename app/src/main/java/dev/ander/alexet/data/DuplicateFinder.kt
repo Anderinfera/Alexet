@@ -90,11 +90,14 @@ object DuplicateFinder {
         val result = ArrayList<List<GalleryMedia>>()
         for (group in sameSize) {
             ensureActive()
-            val byPieces = group.groupBy { piecesKey(it, open) }.filterKeys { it != null }.values.filter { it.size > 1 }
+            val pieces = group.map { it to piecesKey(it, open) }
+            val byPieces = pieces.groupBy { it.second?.key }.filterKeys { it != null }.values.filter { it.size > 1 }
             for (candidates in byPieces) {
-                // Whole files only where the pieces matched (usually the real copies).
-                val byHash = candidates.groupBy { fullHash(it, open) }.filterKeys { it != null }.values
-                byHash.filter { it.size > 1 }.forEach(result::add)
+                // Whole files only where the pieces matched (usually the real copies). A file the
+                // first piece covered already has its whole-file hash.
+                val byHash = candidates.groupBy { (media, key) -> key!!.let { if (it.wholeFile) it.key else fullHash(media, open) } }
+                    .filterKeys { it != null }.values
+                byHash.filter { it.size > 1 }.forEach { same -> result.add(same.map { it.first }) }
             }
             done += group.size
             onProgress(done.toFloat() / total)
@@ -102,12 +105,17 @@ object DuplicateFinder {
         result
     }
 
-    private fun piecesKey(media: GalleryMedia, open: (GalleryMedia) -> InputStream?): String? = runCatching {
+    /** [key] hashes the first and last pieces; [wholeFile] when the first piece was all of the file. */
+    private class PiecesKey(val key: String, val wholeFile: Boolean)
+
+    private fun piecesKey(media: GalleryMedia, open: (GalleryMedia) -> InputStream?): PiecesKey? = runCatching {
         open(media)?.use { input ->
             val digest = MessageDigest.getInstance("SHA-256")
             val buffer = ByteArray(PIECE)
-            digest.update(buffer, 0, input.readFully(buffer))
+            val first = input.readFully(buffer)
+            digest.update(buffer, 0, first)
             val tailStart = media.sizeBytes - PIECE
+            var wholeFile = false
             if (tailStart > PIECE) {
                 var toSkip = tailStart - PIECE
                 while (toSkip > 0) {
@@ -116,8 +124,12 @@ object DuplicateFinder {
                     toSkip -= skipped
                 }
                 digest.update(buffer, 0, input.readFully(buffer))
+            } else if (media.sizeBytes <= PIECE) {
+                // Only when nothing follows (the listed size can be stale): then the key is the
+                // same SHA-256 the whole-file hash gives.
+                wholeFile = first < PIECE || runCatching { input.read() < 0 }.getOrDefault(false)
             }
-            digest.digest().toHex()
+            PiecesKey(digest.digest().toHex(), wholeFile)
         }
     }.getOrNull()
 

@@ -99,6 +99,36 @@ class MediaIndexLogicTest {
     }
 
     @Test
+    fun diffWritesNewRowsAndAnyChangedStoredField() {
+        val a = media(1)
+        val persisted = mapOf(1L to a)
+        val changed = listOf(
+            a.copy(uri = uri("content://media/external/video/media/1")),
+            a.copy(mimeType = "image/png"),
+            a.copy(dateTakenMs = 9L),
+            a.copy(dateModifiedMs = 9L),
+            a.copy(dateAddedMs = 9L),
+            a.copy(sizeBytes = 9L),
+            a.copy(width = 9),
+            a.copy(height = 9),
+            a.copy(durationMs = 9L),
+            a.copy(bucketId = 9L),
+            a.copy(bucketName = "x"),
+            a.copy(relativePath = "x/"),
+            a.copy(isHidden = true),
+            a.copy(absolutePath = null),
+            a.copy(rawBucketId = 9L),
+        )
+        for (row in changed) {
+            assertEquals(listOf(row), MediaIndexLogic.diff(persisted, listOf(row)).upserts)
+        }
+        val fresh = media(2)
+        val diff = MediaIndexLogic.diff(persisted, listOf(a, fresh))
+        assertEquals(listOf(fresh), diff.upserts)
+        assertTrue(diff.deletes.isEmpty())
+    }
+
+    @Test
     fun diffIsEmptyForEqualCopies() {
         val a = media(1)
         val persisted = mapOf(1L to a)

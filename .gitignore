@@ -32,3 +32,4 @@ changes.md
 
 # Standalone drawables not used by the app
 /hammer_anvil_anim.xml
+/phone_unfold_anim.xml

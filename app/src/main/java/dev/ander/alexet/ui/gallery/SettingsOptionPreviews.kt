@@ -16,12 +16,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -47,6 +51,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -65,8 +71,10 @@ import kotlin.math.sin
 /** Settings option shown by [OptionPreview] (the player's own ones are [PlayerOptionPreview]). */
 internal enum class OptionPreviewKind {
     EXTRA_VIEW,
+    EXTRA_VIEW_FOLDABLE,
     DYNAMIC_SPLIT,
     FOLD_SPLIT,
+    FOLD_SHOWS_FOLDERS,
     DURATION_FORMAT,
     SCROLLER,
     SMOOTH_SCROLL,
@@ -87,6 +95,7 @@ internal enum class OptionPreviewKind {
     STRIP_EXIF,
     STRIP_EXIF_SHARE,
     SHARP_THUMBNAILS,
+    FILE_NAMES,
 }
 
 private val SponsorGreen = Color(0xFF00D400)
@@ -156,7 +165,11 @@ internal fun PreviewInfoCard(
                 BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                     val k = minOf(maxWidth / previewWidth, 220.dp / previewHeight, 5f).coerceAtLeast(1f)
                     Box(Modifier.size(previewWidth * k, previewHeight * k), contentAlignment = Alignment.Center) {
-                        preview(Modifier.graphicsLayer { scaleX = k; scaleY = k })
+                        // Moving here even in light mode: the card is opened to see what the option does
+                        // (the small pictures in the list stay still there).
+                        CompositionLocalProvider(LocalLightMode provides false, LocalPreviewScale provides k) {
+                            preview(Modifier.graphicsLayer { scaleX = k; scaleY = k })
+                        }
                     }
                 }
                 Spacer(Modifier.height(16.dp))
@@ -180,9 +193,10 @@ internal fun PreviewInfoCard(
 
 /** Name and explanation of each option picture. */
 private fun optionPreviewInfo(kind: OptionPreviewKind): Pair<Int, Int> = when (kind) {
-    OptionPreviewKind.EXTRA_VIEW -> R.string.show_foldable_settings_title to R.string.preview_info_extra_view
+    OptionPreviewKind.EXTRA_VIEW, OptionPreviewKind.EXTRA_VIEW_FOLDABLE -> R.string.show_foldable_settings_title to R.string.preview_info_extra_view
     OptionPreviewKind.DYNAMIC_SPLIT -> R.string.dynamic_split_title to R.string.preview_info_dynamic_split
     OptionPreviewKind.FOLD_SPLIT -> R.string.auto_fold_split_title to R.string.preview_info_fold_split
+    OptionPreviewKind.FOLD_SHOWS_FOLDERS -> R.string.fold_shows_folders_title to R.string.preview_info_fold_shows_folders
     OptionPreviewKind.DURATION_FORMAT -> R.string.video_duration_format_title to R.string.preview_info_duration_format
     OptionPreviewKind.SCROLLER -> R.string.scroller_enabled_title to R.string.preview_info_scroller
     OptionPreviewKind.SMOOTH_SCROLL -> R.string.scroller_smooth_title to R.string.preview_info_smooth_scroll
@@ -203,7 +217,27 @@ private fun optionPreviewInfo(kind: OptionPreviewKind): Pair<Int, Int> = when (k
     OptionPreviewKind.STRIP_EXIF -> R.string.strip_exif_title to R.string.preview_info_strip_exif
     OptionPreviewKind.STRIP_EXIF_SHARE -> R.string.strip_exif_on_share_title to R.string.preview_info_strip_exif_share
     OptionPreviewKind.SHARP_THUMBNAILS -> R.string.thumbnails_high_res_title to R.string.preview_info_sharp_thumbnails
+    OptionPreviewKind.FILE_NAMES -> R.string.show_file_names to R.string.preview_info_show_file_names
 }
+
+/**
+ * Whether a settings picture is on screen. The settings pages are scrolling columns that compose
+ * every row, so a picture scrolled out of sight would keep animating; its bounds in the window
+ * (clipped by the list) are empty then. Starts true: a picture in sight moves from its first frame.
+ */
+internal class PreviewOnScreen {
+    var value by mutableStateOf(true)
+        private set
+
+    /** Goes on the picture's own layout. */
+    val modifier: Modifier = Modifier.onGloballyPositioned { coordinates ->
+        val visible = coordinates.boundsInWindow().let { r -> r.width > 0f && r.height > 0f }
+        if (visible != value) value = visible
+    }
+}
+
+@Composable
+internal fun rememberPreviewOnScreen(): PreviewOnScreen = remember { PreviewOnScreen() }
 
 @Composable
 private fun OptionPreviewCanvas(
@@ -213,6 +247,11 @@ private fun OptionPreviewCanvas(
     fullDuration: Boolean = false,
     linearSelect: Boolean = false,
 ) {
+    if (kind == OptionPreviewKind.EXTRA_VIEW_FOLDABLE) {
+        // An animated drawable (the foldable opening into two panes) instead of a drawing.
+        AnimatedDrawablePreview(dev.ander.alexet.R.drawable.phone_unfold_anim, active, modifier)
+        return
+    }
     val cycleMs = when (kind) {
         OptionPreviewKind.DURATION_FORMAT -> 2400
         OptionPreviewKind.SMOOTH_SCROLL -> 2600
@@ -230,8 +269,9 @@ private fun OptionPreviewCanvas(
         OptionPreviewKind.NEWPIPE -> 0.4f
         else -> 0.65f
     }
+    val onScreen = rememberPreviewOnScreen()
     // Read only while drawing: the frames redraw the canvas without recomposing the row.
-    val time: State<Float>? = if (active && !LocalLightMode.current) {
+    val time: State<Float>? = if (active && !LocalLightMode.current && onScreen.value) {
         key(cycleMs) {
             rememberInfiniteTransition(label = "optionPreview").animateFloat(
                 initialValue = 0f,
@@ -252,6 +292,9 @@ private fun OptionPreviewCanvas(
         OptionPreviewKind.RANDOM_NAMES -> listOf("IMG_2034.jpg" to 6.5.sp, "k3f9a2x.jpg" to 6.5.sp)
         else -> emptyList()
     }
+    // A few tiles of the scrolling grid are "videos": a jump by a whole row shows by them moving
+    // (the plain tiles look the same after it). Drawn anew each time the picture is shown.
+    val videoTiles = remember(kind) { (0 until 36).shuffled().take(5).toSet() }
     val labels = remember(texts, textMeasurer) {
         texts.map { (text, size) ->
             textMeasurer.measure(text, TextStyle(color = PreviewWhite, fontSize = size, fontWeight = FontWeight.Bold))
@@ -262,18 +305,21 @@ private fun OptionPreviewCanvas(
         modifier
             .size(width = 56.dp, height = 40.dp)
             .graphicsLayer { alpha = if (active) 1f else 0.45f }
-            .clip(shape),
+            .clip(shape)
+            .then(onScreen.modifier),
     ) {
         val t = time?.value ?: stillFrame
         drawRect(PreviewScreen)
         when (kind) {
             OptionPreviewKind.EXTRA_VIEW -> drawExtraView(t, accent)
+            OptionPreviewKind.EXTRA_VIEW_FOLDABLE -> Unit
             OptionPreviewKind.DYNAMIC_SPLIT -> drawDynamicSplit(t, accent)
             OptionPreviewKind.FOLD_SPLIT -> drawFoldSplit(t, accent)
+            OptionPreviewKind.FOLD_SHOWS_FOLDERS -> drawFoldShowsFolders(t, accent)
             OptionPreviewKind.DURATION_FORMAT -> drawDuration(t, accent, labels.firstOrNull())
             OptionPreviewKind.SCROLLER -> drawScroller(t, accent)
-            OptionPreviewKind.SMOOTH_SCROLL -> drawSmoothScroll(t, accent)
-            OptionPreviewKind.ROW_SCROLL -> drawRowScroll(t, accent)
+            OptionPreviewKind.SMOOTH_SCROLL -> drawSmoothScroll(t, accent, videoTiles)
+            OptionPreviewKind.ROW_SCROLL -> drawRowScroll(t, accent, videoTiles)
             OptionPreviewKind.ALL_FILES -> drawAllFiles(t, accent, labels.firstOrNull())
             OptionPreviewKind.OTHER_FILE_FOLDERS -> drawOtherFolders(t, accent)
             OptionPreviewKind.HIDE_FAVORITES -> drawHideFavorites(t, accent)
@@ -290,6 +336,7 @@ private fun OptionPreviewCanvas(
             OptionPreviewKind.STRIP_EXIF -> drawStripExif(t, accent)
             OptionPreviewKind.STRIP_EXIF_SHARE -> drawStripExifShare(t, accent)
             OptionPreviewKind.SHARP_THUMBNAILS -> drawSharpThumbnails(t, accent)
+            OptionPreviewKind.FILE_NAMES -> drawFileNames(t, accent, showNames = active)
         }
     }
 }
@@ -451,6 +498,7 @@ private fun DrawScope.labelAtRight(label: TextLayoutResult?, right: Float, cente
 // ----------------------------------------------------------------------------- View
 
 /** The phone turns sideways and shows folders and contents side by side. */
+/** A phone turned sideways shows the folders and a folder's contents side by side. */
 private fun DrawScope.drawExtraView(t: Float, accent: Color) {
     val turn = ease(seg(t, 0.18f, 0.4f)) * (1f - ease(seg(t, 0.82f, 0.98f)))
     val land = seg(turn, 0.75f, 1f)
@@ -522,6 +570,33 @@ private fun DrawScope.drawFoldSplit(t: Float, accent: Color) {
     drawLine(accent, Offset(split, area.top), Offset(split, area.bottom), strokeWidth = 1.2f * u)
 }
 
+/**
+ * Unfolded: folders on the left, a folder's files on the right. Folded to the outer screen: the
+ * folders, not the files. Unfolded again: the folder is back.
+ */
+private fun DrawScope.drawFoldShowsFolders(t: Float, accent: Color) {
+    val fold = ease(seg(t, 0.2f, 0.42f)) * (1f - ease(seg(t, 0.8f, 0.97f)))
+    val wide = Rect(3f * u, 4f * u, size.width - 3f * u, size.height - 4f * u)
+    val phoneW = wide.height * 0.62f
+    val phone = Rect(wide.center.x - phoneW / 2f, wide.top, wide.center.x + phoneW / 2f, wide.bottom)
+    val screen = lerpRect(wide, phone, fold)
+    drawRoundRect(PreviewWhite.copy(alpha = 0.08f), screen.topLeft, screen.size, CornerRadius(2f * u))
+    val panes = 1f - seg(fold, 0f, 0.55f)
+    val folders = seg(fold, 0.55f, 1f)
+    if (panes > 0f) {
+        val split = screen.left + screen.width * 0.4f
+        cells(Rect(screen.left + 1.5f * u, screen.top + 1.5f * u, split - 1.5f * u, screen.bottom - 1.5f * u), 2, 2, 1.2f * u)
+            .forEach { folder(it, accent.copy(alpha = 0.75f * panes)) }
+        cells(Rect(split + 1.5f * u, screen.top + 1.5f * u, screen.right - 1.5f * u, screen.bottom - 1.5f * u), 3, 2, 1.2f * u)
+            .forEach { tile(it, PreviewWhite.copy(alpha = 0.4f * panes), 1f * u) }
+        drawLine(accent.copy(alpha = panes), Offset(split, screen.top), Offset(split, screen.bottom), strokeWidth = 1.2f * u)
+    }
+    if (folders > 0f) {
+        cells(Rect(screen.left + 1.5f * u, screen.top + 1.5f * u, screen.right - 1.5f * u, screen.bottom - 1.5f * u), 2, 3, 1.2f * u)
+            .forEach { folder(it, accent.copy(alpha = 0.75f * folders)) }
+    }
+}
+
 /** A playing video tile with its length as chosen. */
 private fun DrawScope.drawDuration(t: Float, accent: Color, label: TextLayoutResult?) {
     val r = Rect(5f * u, 4f * u, size.width - 5f * u, size.height - 4f * u)
@@ -535,7 +610,7 @@ private fun DrawScope.drawDuration(t: Float, accent: Color, label: TextLayoutRes
     drawLine(PreviewWhite, Offset(x0, y), Offset(lerp(x0, x1, t), y), strokeWidth = 1.5f * u, cap = StrokeCap.Round)
 }
 
-private fun DrawScope.scrollingGrid(area: Rect, offset: Float, color: Color) {
+private fun DrawScope.scrollingGrid(area: Rect, offset: Float, color: Color, videoTiles: Set<Int> = emptySet()) {
     val gap = 1.5f * u
     val cell = (area.width - gap * 3f) / 4f
     clipRect(area.left, area.top, area.right, area.bottom) {
@@ -543,7 +618,9 @@ private fun DrawScope.scrollingGrid(area: Rect, offset: Float, color: Color) {
             val y = area.top + r * (cell + gap) - offset
             if (y > area.bottom || y + cell < area.top) continue
             for (c in 0 until 4) {
-                tile(Rect(Offset(area.left + c * (cell + gap), y), Size(cell, cell)), color, 1f * u)
+                val rect = Rect(Offset(area.left + c * (cell + gap), y), Size(cell, cell))
+                tile(rect, color, 1f * u)
+                if (r * 4 + c in videoTiles) drawPlayTriangle(rect.center, cell * 0.24f, PreviewWhite.copy(alpha = 0.9f))
             }
         }
     }
@@ -569,13 +646,13 @@ private fun DrawScope.drawScroller(t: Float, accent: Color) {
 }
 
 /** The grid glides back and forth without jumps (a faint trail shows the motion). */
-private fun DrawScope.drawSmoothScroll(t: Float, accent: Color) {
+private fun DrawScope.drawSmoothScroll(t: Float, accent: Color, videoTiles: Set<Int>) {
     val area = Rect(3f * u, 3f * u, size.width - 10f * u, size.height - 3f * u)
     val travel = gridTravel(area)
     val p = 0.5f - 0.5f * cos(2f * PI.toFloat() * t)
     val v = sin(2f * PI.toFloat() * t)
     scrollingGrid(area, p * travel - v * 4f * u, PreviewWhite.copy(alpha = 0.08f))
-    scrollingGrid(area, p * travel, PreviewWhite.copy(alpha = 0.35f))
+    scrollingGrid(area, p * travel, PreviewWhite.copy(alpha = 0.35f), videoTiles)
     val x = size.width - 5f * u
     val pillH = 10f * u
     val pillY = lerp(area.top, area.bottom - pillH, p)
@@ -587,14 +664,14 @@ private fun DrawScope.drawSmoothScroll(t: Float, accent: Color) {
  * The handle glides back and forth, and the grid follows it a whole row at a time: it stands
  * still between the jumps, and a row's worth of the handle's way moves it one row.
  */
-private fun DrawScope.drawRowScroll(t: Float, accent: Color) {
+private fun DrawScope.drawRowScroll(t: Float, accent: Color, videoTiles: Set<Int>) {
     val area = Rect(3f * u, 3f * u, size.width - 10f * u, size.height - 3f * u)
     val travel = gridTravel(area)
     val gap = 1.5f * u
     val row = (area.width - gap * 3f) / 4f + gap
     val p = 0.5f - 0.5f * cos(2f * PI.toFloat() * t)
     val rows = kotlin.math.round(p * travel / row)
-    scrollingGrid(area, (rows * row).coerceAtMost(travel), PreviewWhite.copy(alpha = 0.35f))
+    scrollingGrid(area, (rows * row).coerceAtMost(travel), PreviewWhite.copy(alpha = 0.35f), videoTiles)
     val x = size.width - 5f * u
     val pillH = 10f * u
     val pillY = lerp(area.top, area.bottom - pillH, p)
@@ -893,6 +970,34 @@ private fun DrawScope.drawRandomNames(t: Float, accent: Color, names: List<TextL
     if (glint > 0f) sparkle(Offset(r.right + 3f * u, r.top + 3f * u), 2.5f * u * glint, accent.copy(alpha = glint))
 }
 
+/**
+ * Three photo tiles; with [showNames] a name line is written under each, one after another, and
+ * wiped before the next round. Without names the tiles stand alone.
+ */
+private fun DrawScope.drawFileNames(t: Float, accent: Color, showNames: Boolean) {
+    val cell = 13f * u
+    val gap = 3f * u
+    val nameGap = 3f * u
+    val nameH = 2.2f * u
+    val dy = if (showNames) -(nameGap + nameH) / 2f else 0f
+    val tiles = squareCells(cols = 3, rows = 1, cell = cell, gap = gap, dy = dy)
+    val wipe = 1f - ease(seg(t, 0.86f, 0.97f))
+    tiles.forEachIndexed { i, r ->
+        photo(r, accent)
+        if (!showNames) return@forEachIndexed
+        val written = ease(seg(t, 0.08f + i * 0.14f, 0.3f + i * 0.14f)) * wipe
+        if (written <= 0f) return@forEachIndexed
+        val full = r.width * (if (i == 1) 0.7f else 0.9f)
+        val top = r.bottom + nameGap
+        drawRoundRect(
+            PreviewWhite.copy(alpha = 0.85f),
+            Offset(r.center.x - full / 2f, top),
+            Size(full * written, nameH),
+            CornerRadius(nameH / 2f),
+        )
+    }
+}
+
 /** The location and camera tags drop off the photo. */
 private fun DrawScope.drawStripExif(t: Float, accent: Color) {
     val r = Rect(Offset(center.x - 15f * u, center.y - 12f * u), Size(30f * u, 24f * u))
@@ -972,4 +1077,50 @@ private fun inTriangle(p: Offset, a: Offset, b: Offset, c: Offset): Boolean {
     val neg = d1 < 0 || d2 < 0 || d3 < 0
     val pos = d1 > 0 || d2 > 0 || d3 > 0
     return !(neg && pos)
+}
+
+/** How much the info card enlarges the option picture (1 in the settings list). */
+internal val LocalPreviewScale = androidx.compose.runtime.compositionLocalOf { 1f }
+
+/**
+ * An option picture made as an animated vector drawable: the same frame as the drawn ones
+ * (56 x 40 dp, dimmed and still while the option is off or in light mode), the drawing filling it.
+ * In the info card it is laid out at the enlarged size itself (a scaled-up view would be blurry).
+ */
+@Composable
+private fun AnimatedDrawablePreview(drawableRes: Int, active: Boolean, modifier: Modifier) {
+    val k = LocalPreviewScale.current
+    val animate = active && !LocalLightMode.current
+    val frame = if (k == 1f) {
+        modifier.size(width = 56.dp, height = 40.dp)
+    } else {
+        Modifier.requiredSize(width = 56.dp * k, height = 40.dp * k)
+    }
+    androidx.compose.foundation.layout.Box(
+        frame
+            .graphicsLayer { alpha = if (active) 1f else 0.45f }
+            .clip(RoundedCornerShape(8.dp * k))
+            .background(PreviewScreen),
+    ) {
+        androidx.compose.ui.viewinterop.AndroidView(
+            factory = { context ->
+                android.widget.ImageView(context).apply {
+                    scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                    setImageDrawable(androidx.core.content.ContextCompat.getDrawable(context, drawableRes))
+                }
+            },
+            update = { view ->
+                val drawable = view.drawable as? android.graphics.drawable.AnimatedVectorDrawable
+                if (animate) {
+                    if (drawable?.isRunning != true) drawable?.start()
+                } else {
+                    // Still: the first frame (the folded phone).
+                    drawable?.stop()
+                    drawable?.reset()
+                }
+            },
+            onRelease = { view -> (view.drawable as? android.graphics.drawable.Animatable)?.stop() },
+            modifier = Modifier.fillMaxSize(),
+        )
+    }
 }

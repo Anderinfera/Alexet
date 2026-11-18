@@ -53,6 +53,8 @@ fun HiddenFolderCover(
     config: HiddenCoverConfig,
     modifier: Modifier = Modifier,
 ) {
+    // Light mode: no RenderEffect blur, the pre-Android 12 stretched picture instead.
+    val light = dev.ander.alexet.ui.components.LocalLightMode.current
     Box(modifier.fillMaxSize().clipToBounds()) {
         when (config.style) {
             HiddenCoverStyle.OFF -> Unit
@@ -62,7 +64,7 @@ fun HiddenFolderCover(
                 PlainColor(config.color)
             }
             HiddenCoverStyle.BLUR -> if (cover != null) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !light) {
                     // A small picture blurred: cheap, and the blur reaches the whole tile.
                     DownscaledCover(
                         cover,

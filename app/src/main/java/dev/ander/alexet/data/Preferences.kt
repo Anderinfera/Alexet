@@ -78,12 +78,18 @@ data class AppSettings(
     val showHidden: Boolean = false,
     val albumOrder: List<Long> = emptyList(),
     val videoDoubleClickToGallery: Boolean = false,
+    /** A tapped video always opens in Alexet's own player, never in another app. */
+    val videosOnlyInAlexet: Boolean = false,
+    /** Alexet's player behaves like a separate player app: a tapped video plays at once, a sideways swipe seeks, speed, loop and proportions are kept. */
+    val playerLikeExternal: Boolean = false,
     val nomediaFolderPaths: List<String> = emptyList(),
     val favoriteMediaIds: List<Long> = emptyList(),
     val hideFavoritesFolder: Boolean = false,
     val barActionSlots: List<SelectionAction?> = DEFAULT_BAR_SLOTS,
     val menuActionOrder: List<SelectionAction> = DEFAULT_MENU_ORDER,
     val hiddenSelectionActions: Set<SelectionAction> = emptySet(),
+    /** Menu cards 2 and 3 of the selection menu (card 1 is [menuActionOrder]); swiped through in the menu. */
+    val extraMenuCards: List<List<SelectionAction>> = emptyList(),
     val rememberFolderScrollAcrossSessions: Boolean = false,
     val newContentScrollsToTop: Boolean = false,
     val savedFolderScrolls: Map<Long, FolderScrollPos> = emptyMap(),
@@ -91,6 +97,8 @@ data class AppSettings(
     val playerConfig: dev.ander.alexet.integration.AnderLineConfig = dev.ander.alexet.integration.AnderLineConfig(),
     val showNavArrows: Boolean = false,
     val anonymousFolderIds: Set<Long> = emptySet(),
+    /** Folders whose files are always named by their place: 1.jpg, 2.mp4… (Folder settings → Numbering). */
+    val numberedFolderIds: Set<Long> = emptySet(),
     val randomizeFileNamesInPrivateFolders: Boolean = true,
     val stripExifInPrivateFolders: Boolean = true,
     val stripExifOnShare: Boolean = false,
@@ -120,6 +128,8 @@ data class AppSettings(
     /** 0 until the folders were shown for the first time; the one-off speed check that may turn on [lightMode] runs only while 0. Device-local. */
     val firstTimeOpened: Int = 0,
     val autoFoldSplitEnabled: Boolean = true,
+    /** Folding the phone closes an open folder: the outer screen shows the folders. */
+    val foldShowsFolders: Boolean = false,
     val foldSplitAngleThreshold: Float = 20f,
     /** "Dynamic edge": 50/50 while the content pane is empty, [panelSplitPercent] once a folder is shown. Off in [lightMode]. */
     val dynamicSplit: Boolean = true,
@@ -150,6 +160,9 @@ data class AppSettings(
     val hiddenCover: HiddenCoverConfig = HiddenCoverConfig(),
 ) {
     companion object {
+        /** Cards of the selection menu, the first one included. */
+        const val MAX_MENU_CARDS = 3
+
         val DEFAULT_BAR_SLOTS: List<SelectionAction?> = listOf(
             SelectionAction.DELETE,
             SelectionAction.SHARE,
@@ -190,6 +203,19 @@ data class AppSettings(
         val inMenu = menuActionOrder.filter { it !in hiddenSelectionActions && it !in barSet }
         val missing = SelectionAction.DEFAULT_ORDER.filter { it !in hiddenSelectionActions && it !in barSet && it !in inMenu }
         return inMenu + missing
+    }
+
+    /**
+     * The menu cards in their order: card 1 ([activeMenuActions]), then the extra ones. An action on
+     * the bar is left out of every card (an extra card left with nothing is skipped); an action may
+     * be on several cards.
+     */
+    fun menuCards(wide: Boolean): List<List<SelectionAction>> {
+        val barSet = activeBarActions(wide).toSet()
+        return listOf(activeMenuActions(wide)) +
+            extraMenuCards.take(MAX_MENU_CARDS - 1)
+                .map { card -> card.filter { it !in barSet }.distinct() }
+                .filter { it.isNotEmpty() }
     }
 
     fun sortFor(albumId: Long, legacyIds: Set<Long> = emptySet()): SortSpec =
@@ -266,6 +292,8 @@ object AlphanumericComparator : Comparator<String> {
      * special cases mixed into natural order broke transitivity and made sort() throw).
      */
     private fun sortKey(full: String): String {
+        // Only a "~" layer changes the key: most names skip the parsing (called per comparison).
+        if (full.indexOf('~') < 0) return full
         val dot = full.lastIndexOf('.')
         val name = if (dot >= 0) full.substring(0, dot) else full
         val parts = parseNumbered(name) ?: return full

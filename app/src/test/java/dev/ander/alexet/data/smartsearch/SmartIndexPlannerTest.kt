@@ -72,6 +72,8 @@ class SmartIndexPlannerTest {
         val plan = SmartIndexPlanner.plan(list, indexed, secure)
         assertEquals(listOf(2L, 3L), plan.toIndex.map { it.id })
         assertEquals(listOf(9L), plan.toDelete)
+        assertEquals(list.count { SmartIndexPlanner.isEligible(it, secure) }, plan.eligible)
+        assertEquals(3, plan.eligible)
     }
 
     private fun inFolder(id: Long, folder: Long) = media(id).copy(bucketId = folder)
@@ -97,6 +99,7 @@ class SmartIndexPlannerTest {
         val plan = SmartIndexPlanner.plan(photos, indexed, secure, SmartFolderFilter(SmartIndexScope.ALL_EXCEPT, excluded = setOf(20L)))
         assertTrue(plan.toIndex.isEmpty())
         assertEquals(listOf(2L), plan.toDelete)
+        assertEquals(1, plan.eligible)
     }
 
     @Test

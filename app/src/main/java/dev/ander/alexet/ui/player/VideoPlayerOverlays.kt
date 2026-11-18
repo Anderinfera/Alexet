@@ -28,9 +28,11 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,10 +48,29 @@ fun PlaybackSpeedSheet(
     currentSpeed: Float,
     onSelectSpeed: (Float) -> Unit,
     onDismiss: () -> Unit,
+    /** A step of the slider: plays at that speed, saved by [onSelectSpeed] once the slide ends. */
+    onSlideSpeed: (Float) -> Unit = onSelectSpeed,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var speed by remember(currentSpeed) { mutableFloatStateOf(currentSpeed) }
     val presets = listOf(0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f, 2.5f, 3.0f)
+    // The last slider step not yet given to onSelectSpeed (NaN: none).
+    val slid = remember { floatArrayOf(Float.NaN) }
+    fun select(value: Float) {
+        slid[0] = Float.NaN
+        onSelectSpeed(value)
+    }
+    // A sheet closed in the middle of a slide still saves where it stopped.
+    val latestOnSelectSpeed by rememberUpdatedState(onSelectSpeed)
+    DisposableEffect(Unit) {
+        onDispose {
+            val pending = slid[0]
+            if (!pending.isNaN()) {
+                slid[0] = Float.NaN
+                latestOnSelectSpeed(pending)
+            }
+        }
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -77,7 +98,7 @@ fun PlaybackSpeedSheet(
                     onClick = {
                         val next = (speed - 0.1f).coerceAtLeast(0.25f)
                         speed = (Math.round(next * 100f) / 100f)
-                        onSelectSpeed(speed)
+                        select(speed)
                     },
                 ) {
                     Icon(Icons.Rounded.Remove, contentDescription = null)
@@ -96,7 +117,7 @@ fun PlaybackSpeedSheet(
                     onClick = {
                         val next = (speed + 0.1f).coerceAtMost(3.0f)
                         speed = (Math.round(next * 100f) / 100f)
-                        onSelectSpeed(speed)
+                        select(speed)
                     },
                 ) {
                     Icon(Icons.Rounded.Add, contentDescription = null)
@@ -109,7 +130,13 @@ fun PlaybackSpeedSheet(
                 steps = 27,
                 onValueChange = {
                     speed = (Math.round(it * 20f) / 20f)
-                    onSelectSpeed(speed)
+                    slid[0] = speed
+                    onSlideSpeed(speed)
+                },
+                // Saved once, at the end of the slide, instead of at every step.
+                onValueChangeFinished = {
+                    val pending = slid[0]
+                    if (!pending.isNaN()) select(pending)
                 },
             )
 
@@ -125,7 +152,7 @@ fun PlaybackSpeedSheet(
                         selected = isSelected,
                         onClick = {
                             speed = preset
-                            onSelectSpeed(preset)
+                            select(preset)
                         },
                         label = {
                             Text(

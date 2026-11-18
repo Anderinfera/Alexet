@@ -49,4 +49,56 @@ class AnderLineClientTest {
         assertEquals(setOf(SponsorBlockCategory.SELF_PROMO, SponsorBlockCategory.OUTRO), chosen.sponsorBlockAutoSkip)
         assertEquals(emptySet<SponsorBlockCategory>(), none.sponsorBlockAutoSkip)
     }
+
+    @Test
+    fun testButtonsPositionAndRememberedState_roundTrip() {
+        val saved = AnderLineConfig(
+            controlButtonsX = 0.2f,
+            controlButtonsY = 0.8f,
+            rememberedSpeed = 1.5f,
+            rememberedLoop = true,
+            rememberedContentScale = "ZOOM",
+        )
+        val read = AnderLineClient.parseConfig(AnderLineClient.configToJson(saved).toString())
+
+        assertEquals(0.2f, read.controlButtonsX, 0.0001f)
+        assertEquals(0.8f, read.controlButtonsY, 0.0001f)
+        assertEquals(1.5f, read.rememberedSpeed, 0.0001f)
+        assertTrue(read.rememberedLoop)
+        assertEquals("ZOOM", read.rememberedContentScale)
+    }
+
+    @Test
+    fun testButtonsPosition_missingKeepsFallbackAndOutOfRangeIsCoerced() {
+        val fallback = AnderLineConfig(controlButtonsX = 0.3f, controlButtonsY = 0.6f)
+        val missing = AnderLineClient.parseConfig("""{"player":{"seekIncrement":15}}""", fallback)
+        val outside = AnderLineClient.parseConfig("""{"player":{"controlButtonsX":-1.0,"controlButtonsY":2.0}}""")
+
+        assertEquals(0.3f, missing.controlButtonsX, 0.0001f)
+        assertEquals(0.6f, missing.controlButtonsY, 0.0001f)
+        assertEquals(0.05f, outside.controlButtonsX, 0.0001f)
+        assertEquals(0.95f, outside.controlButtonsY, 0.0001f)
+    }
+
+    @Test
+    fun testVisibleShortcuts_keepTheirOrder() {
+        val order = linkedSetOf(PlayerShortcut.LOOP, PlayerShortcut.PLAYBACK_SPEED, PlayerShortcut.SCREEN_ROTATION)
+        val read = AnderLineClient.parseConfig(AnderLineClient.configToJson(AnderLineConfig(visibleShortcuts = order)).toString())
+
+        assertEquals(order.toList(), read.visibleShortcuts.toList())
+    }
+
+    @Test
+    fun backgroundPlaySwitchIsAddedOnceToAnOldList() {
+        // Saved before the switch existed: it is added at the end.
+        val old = """{"player":{"visibleShortcuts":["PLAYBACK_SPEED","LOOP"]}}"""
+        assertEquals(
+            listOf(PlayerShortcut.PLAYBACK_SPEED, PlayerShortcut.LOOP, PlayerShortcut.PLAY_IN_BACKGROUND),
+            AnderLineClient.parseConfig(old).visibleShortcuts.toList(),
+        )
+        // Saved after: removing it is the user's choice and stays.
+        val withoutIt = AnderLineConfig(visibleShortcuts = linkedSetOf(PlayerShortcut.PLAYBACK_SPEED, PlayerShortcut.LOOP))
+        val read = AnderLineClient.parseConfig(AnderLineClient.configToJson(withoutIt).toString())
+        assertFalse(PlayerShortcut.PLAY_IN_BACKGROUND in read.visibleShortcuts)
+    }
 }

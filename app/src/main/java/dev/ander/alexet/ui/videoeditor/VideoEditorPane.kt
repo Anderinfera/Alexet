@@ -115,7 +115,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import dev.ander.alexet.foldable.rememberFoldableState
 
 @OptIn(UnstableApi::class)
 @ExperimentalMaterial3Api
@@ -457,9 +456,6 @@ fun VideoEditorPane(
         }
     }
 
-    val foldable = rememberFoldableState()
-    val isTabletop = foldable.isTabletop
-
     Surface(
         modifier = modifier
             .fillMaxSize()
@@ -469,7 +465,7 @@ fun VideoEditorPane(
             Column(
                 modifier = Modifier.fillMaxSize(),
             ) {
-                // Upper Section: Top Bar + Video Preview (above horizontal hinge in Tabletop mode)
+                // Upper Section: Top Bar + Video Preview
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -746,19 +742,12 @@ fun VideoEditorPane(
                 }
                 }
 
-                // --- 3. Bottom Area: Timeline & Tools Panel (in Tabletop mode takes weight(1f) as editing console) ---
+                // --- 3. Bottom Area: Timeline & Tools Panel ---
                 Column(
-                    modifier = if (isTabletop) {
-                        Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                            .navigationBarsPadding()
-                    } else {
-                        Modifier
-                            .fillMaxWidth()
-                            .navigationBarsPadding()
-                    },
-                    verticalArrangement = if (isTabletop) Arrangement.Center else Arrangement.Top,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding(),
+                    verticalArrangement = Arrangement.Top,
                 ) {
                     // Multi-track Timeline (Always visible!)
                     VideoTimeline(

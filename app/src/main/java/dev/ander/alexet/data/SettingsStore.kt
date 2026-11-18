@@ -44,6 +44,8 @@ class SettingsStore(context: Context) {
         val before = _settings.value
         val after = _settings.updateAndGet(transform)
         AppLog.enabled = after.debugLogging
+        // Nothing changed: nothing to save (an earlier pending write still runs).
+        if (after == before) return
         if (AppLog.enabled && before !== after) {
             val changes = AppLog.describeChanges(before, after)
             if (changes.isNotEmpty()) AppLog.event("Settings") { changes.joinToString("; ") }
@@ -108,11 +110,14 @@ class SettingsStore(context: Context) {
     }
 
     fun setLastOpenedFolder(id: Long) {
+        if (id == _settings.value.lastOpenedFolderId) return
         update { it.copy(lastOpenedFolderId = id) }
     }
 
     fun setRememberedOpenFolders(ids: List<Long>) {
-        update { it.copy(rememberedOpenFolders = ids.take(2)) }
+        val kept = ids.take(2)
+        if (kept == _settings.value.rememberedOpenFolders) return
+        update { it.copy(rememberedOpenFolders = kept) }
     }
 
     fun setGridColumns(cols: Int) {
@@ -192,6 +197,8 @@ class SettingsStore(context: Context) {
             put("showHidden", value.showHidden)
             put("albumOrder", JSONArray(value.albumOrder))
             put("videoDoubleClickToGallery", value.videoDoubleClickToGallery)
+            put("videosOnlyInAlexet", value.videosOnlyInAlexet)
+            put("playerLikeExternal", value.playerLikeExternal)
             put("newpipeFolderRelativePath", value.newpipeFolderRelativePath)
             put("nomediaFolderPaths", JSONArray(value.nomediaFolderPaths))
             put("favoriteMediaIds", JSONArray(value.favoriteMediaIds))
@@ -203,6 +210,7 @@ class SettingsStore(context: Context) {
             })
             put("menuActionOrder", JSONArray(value.menuActionOrder.map { it.name }))
             put("hiddenSelectionActions", JSONArray(value.hiddenSelectionActions.map { it.name }))
+            put("extraMenuCards", JSONArray(value.extraMenuCards.map { card -> JSONArray(card.map { it.name }) }))
             put("rememberFolderScrollAcrossSessions", value.rememberFolderScrollAcrossSessions)
             put("newContentScrollsToTop", value.newContentScrollsToTop)
             put(
@@ -216,6 +224,7 @@ class SettingsStore(context: Context) {
             put("autoplayGifs", value.autoplayGifs)
             put("showNavArrows", value.showNavArrows)
             put("anonymousFolderIds", JSONArray(value.anonymousFolderIds.toList()))
+            put("numberedFolderIds", JSONArray(value.numberedFolderIds.toList()))
             put("randomizeFileNamesInPrivateFolders", value.randomizeFileNamesInPrivateFolders)
             put("stripExifInPrivateFolders", value.stripExifInPrivateFolders)
             put("stripExifOnShare", value.stripExifOnShare)
@@ -237,6 +246,7 @@ class SettingsStore(context: Context) {
             put("customWallpaperUnfoldedWidth", value.customWallpaperUnfoldedWidth)
             put("customWallpaperUnfoldedHeight", value.customWallpaperUnfoldedHeight)
             put("autoFoldSplitEnabled", value.autoFoldSplitEnabled)
+            put("foldShowsFolders", value.foldShowsFolders)
             put("foldSplitAngleThreshold", value.foldSplitAngleThreshold.toDouble())
             put("dynamicSplit", value.dynamicSplit)
             put("showFoldableSettings", value.showFoldableSettings)
@@ -325,6 +335,8 @@ class SettingsStore(context: Context) {
                 allFilesFolderIds = if (o.has("allFilesFolderIds")) parseIds(o.optJSONArray("allFilesFolderIds")) else current.allFilesFolderIds,
                 showHidden = if (o.has("showHidden")) o.optBoolean("showHidden", current.showHidden) else current.showHidden,
                 albumOrder = if (o.has("albumOrder")) parseIdList(o.optJSONArray("albumOrder")) else current.albumOrder,
+                videosOnlyInAlexet = if (o.has("videosOnlyInAlexet")) o.optBoolean("videosOnlyInAlexet", current.videosOnlyInAlexet) else current.videosOnlyInAlexet,
+                playerLikeExternal = if (o.has("playerLikeExternal")) o.optBoolean("playerLikeExternal", current.playerLikeExternal) else current.playerLikeExternal,
                 videoDoubleClickToGallery = if (o.has("videoDoubleClickToGallery")) o.optBoolean("videoDoubleClickToGallery", current.videoDoubleClickToGallery) else current.videoDoubleClickToGallery,
                 newpipeFolderRelativePath = if (o.has("newpipeFolderRelativePath")) o.optString("newpipeFolderRelativePath") else current.newpipeFolderRelativePath,
                 nomediaFolderPaths = if (o.has("nomediaFolderPaths")) parseStringList(o.optJSONArray("nomediaFolderPaths")) else current.nomediaFolderPaths,
@@ -333,6 +345,7 @@ class SettingsStore(context: Context) {
                 barActionSlots = if (o.has("barActionSlots")) parseNullableActionList(o.optJSONArray("barActionSlots")) else current.barActionSlots,
                 menuActionOrder = if (o.has("menuActionOrder")) parseActionList(o.optJSONArray("menuActionOrder"), current.menuActionOrder) else current.menuActionOrder,
                 hiddenSelectionActions = if (o.has("hiddenSelectionActions")) parseActionSet(o.optJSONArray("hiddenSelectionActions")) else current.hiddenSelectionActions,
+                extraMenuCards = if (o.has("extraMenuCards")) parseMenuCards(o.optJSONArray("extraMenuCards")) else current.extraMenuCards,
                 rememberFolderScrollAcrossSessions = if (o.has("rememberFolderScrollAcrossSessions")) o.optBoolean("rememberFolderScrollAcrossSessions", current.rememberFolderScrollAcrossSessions) else current.rememberFolderScrollAcrossSessions,
                 newContentScrollsToTop = if (o.has("newContentScrollsToTop")) o.optBoolean("newContentScrollsToTop", current.newContentScrollsToTop) else current.newContentScrollsToTop,
                 savedFolderScrolls = if (o.has("savedFolderScrolls")) parseFolderScrolls(o.optJSONObject("savedFolderScrolls")) else current.savedFolderScrolls,
@@ -340,6 +353,7 @@ class SettingsStore(context: Context) {
                 playerConfig = playerConfig,
                 showNavArrows = if (o.has("showNavArrows")) o.optBoolean("showNavArrows", current.showNavArrows) else current.showNavArrows,
                 anonymousFolderIds = if (o.has("anonymousFolderIds")) parseIds(o.optJSONArray("anonymousFolderIds")) else current.anonymousFolderIds,
+                numberedFolderIds = if (o.has("numberedFolderIds")) parseIds(o.optJSONArray("numberedFolderIds")) else current.numberedFolderIds,
                 randomizeFileNamesInPrivateFolders = if (o.has("randomizeFileNamesInPrivateFolders")) o.optBoolean("randomizeFileNamesInPrivateFolders", current.randomizeFileNamesInPrivateFolders) else current.randomizeFileNamesInPrivateFolders,
                 stripExifInPrivateFolders = if (o.has("stripExifInPrivateFolders")) o.optBoolean("stripExifInPrivateFolders", current.stripExifInPrivateFolders) else current.stripExifInPrivateFolders,
                 stripExifOnShare = if (o.has("stripExifOnShare")) o.optBoolean("stripExifOnShare", current.stripExifOnShare) else current.stripExifOnShare,
@@ -357,6 +371,7 @@ class SettingsStore(context: Context) {
                 customWallpaperUnfoldedWidth = if (o.has("customWallpaperUnfoldedWidth")) o.optInt("customWallpaperUnfoldedWidth", current.customWallpaperUnfoldedWidth) else current.customWallpaperUnfoldedWidth,
                 customWallpaperUnfoldedHeight = if (o.has("customWallpaperUnfoldedHeight")) o.optInt("customWallpaperUnfoldedHeight", current.customWallpaperUnfoldedHeight) else current.customWallpaperUnfoldedHeight,
                 autoFoldSplitEnabled = if (o.has("autoFoldSplitEnabled")) o.optBoolean("autoFoldSplitEnabled", current.autoFoldSplitEnabled) else current.autoFoldSplitEnabled,
+                foldShowsFolders = if (o.has("foldShowsFolders")) o.optBoolean("foldShowsFolders", current.foldShowsFolders) else current.foldShowsFolders,
                 foldSplitAngleThreshold = if (o.has("foldSplitAngleThreshold")) o.optDouble("foldSplitAngleThreshold", current.foldSplitAngleThreshold.toDouble()).toFloat().coerceIn(5f, 90f) else current.foldSplitAngleThreshold,
                 dynamicSplit = if (o.has("dynamicSplit")) o.optBoolean("dynamicSplit", current.dynamicSplit) else current.dynamicSplit,
                 showFoldableSettings = if (o.has("showFoldableSettings")) o.optBoolean("showFoldableSettings", current.showFoldableSettings) else current.showFoldableSettings,
@@ -446,6 +461,8 @@ class SettingsStore(context: Context) {
             showHidden = prefs.getBoolean(KEY_SHOW_HIDDEN, false),
             albumOrder = parseCsvIdList(prefs.getString(KEY_ALBUM_ORDER, "")),
             videoDoubleClickToGallery = prefs.getBoolean(KEY_VIDEO_DOUBLE_CLICK, false),
+            videosOnlyInAlexet = prefs.getBoolean(KEY_VIDEOS_ONLY_IN_ALEXET, false),
+            playerLikeExternal = prefs.getBoolean(KEY_PLAYER_LIKE_EXTERNAL, false),
             newpipeFolderRelativePath = prefs.getString(KEY_NEWPIPE_FOLDER, "").orEmpty(),
             nomediaFolderPaths = parseStringList(prefs.getString(KEY_NOMEDIA_PATHS, null)),
             favoriteMediaIds = parseCsvIdList(prefs.getString(KEY_FAVORITE_MEDIA, "")),
@@ -453,6 +470,7 @@ class SettingsStore(context: Context) {
             barActionSlots = parseCsvNullableActionList(prefs.getString(KEY_BAR_SLOTS, null)),
             menuActionOrder = parseCsvActionList(prefs.getString(KEY_MENU_ORDER, null), AppSettings.DEFAULT_MENU_ORDER),
             hiddenSelectionActions = parseCsvActionSet(prefs.getString(KEY_HIDDEN_SELECTION_ACTIONS, "")),
+            extraMenuCards = parseCsvMenuCards(prefs.getString(KEY_EXTRA_MENU_CARDS, null)),
             rememberFolderScrollAcrossSessions = prefs.getBoolean(KEY_REMEMBER_FOLDER_SCROLL, false),
             newContentScrollsToTop = prefs.getBoolean(KEY_NEW_CONTENT_SCROLLS_TO_TOP, false),
             savedFolderScrolls = parseFolderScrolls(prefs.getString(KEY_SAVED_FOLDER_SCROLLS, null)?.let { raw ->
@@ -464,6 +482,7 @@ class SettingsStore(context: Context) {
             } ?: dev.ander.alexet.integration.AnderLineConfig(),
             showNavArrows = prefs.getBoolean(KEY_SHOW_NAV_ARROWS, false),
             anonymousFolderIds = parseCsvIds(prefs.getString(KEY_ANONYMOUS_FOLDERS, "")),
+            numberedFolderIds = parseCsvIds(prefs.getString(KEY_NUMBERED_FOLDERS, "")),
             randomizeFileNamesInPrivateFolders = prefs.getBoolean(KEY_RANDOMIZE_FILE_NAMES_IN_PRIVATE_FOLDERS, true),
             stripExifInPrivateFolders = prefs.getBoolean(KEY_STRIP_EXIF_IN_PRIVATE_FOLDERS, true),
             stripExifOnShare = prefs.getBoolean(KEY_STRIP_EXIF_ON_SHARE, false),
@@ -483,6 +502,7 @@ class SettingsStore(context: Context) {
             customWallpaperUnfoldedWidth = prefs.getInt(KEY_CUSTOM_WALLPAPER_UNFOLDED_W, 0),
             customWallpaperUnfoldedHeight = prefs.getInt(KEY_CUSTOM_WALLPAPER_UNFOLDED_H, 0),
             autoFoldSplitEnabled = prefs.getBoolean(KEY_AUTO_FOLD_SPLIT_ENABLED, true),
+            foldShowsFolders = prefs.getBoolean(KEY_FOLD_SHOWS_FOLDERS, false),
             foldSplitAngleThreshold = prefs.getFloat(KEY_FOLD_SPLIT_ANGLE_THRESHOLD, 20f),
             dynamicSplit = prefs.getBoolean(KEY_DYNAMIC_SPLIT, true),
             showFoldableSettings = prefs.getBoolean(KEY_SHOW_FOLDABLE_SETTINGS, false),
@@ -539,6 +559,8 @@ class SettingsStore(context: Context) {
             putBoolean(KEY_SHOW_HIDDEN, value.showHidden)
             putString(KEY_ALBUM_ORDER, value.albumOrder.joinToString(","))
             putBoolean(KEY_VIDEO_DOUBLE_CLICK, value.videoDoubleClickToGallery)
+            putBoolean(KEY_VIDEOS_ONLY_IN_ALEXET, value.videosOnlyInAlexet)
+            putBoolean(KEY_PLAYER_LIKE_EXTERNAL, value.playerLikeExternal)
             putString(KEY_NEWPIPE_FOLDER, value.newpipeFolderRelativePath)
             putString(KEY_NOMEDIA_PATHS, JSONArray(value.nomediaFolderPaths).toString())
             putString(KEY_FAVORITE_MEDIA, value.favoriteMediaIds.joinToString(","))
@@ -546,6 +568,7 @@ class SettingsStore(context: Context) {
             putString(KEY_BAR_SLOTS, value.barActionSlots.joinToString(",") { it?.name.orEmpty() })
             putString(KEY_MENU_ORDER, value.menuActionOrder.joinToString(",") { it.name })
             putString(KEY_HIDDEN_SELECTION_ACTIONS, value.hiddenSelectionActions.joinToString(",") { it.name })
+            putString(KEY_EXTRA_MENU_CARDS, value.extraMenuCards.joinToString(";") { card -> card.joinToString(",") { it.name } })
             putBoolean(KEY_REMEMBER_FOLDER_SCROLL, value.rememberFolderScrollAcrossSessions)
             putBoolean(KEY_NEW_CONTENT_SCROLLS_TO_TOP, value.newContentScrollsToTop)
             putString(
@@ -559,6 +582,7 @@ class SettingsStore(context: Context) {
             putBoolean(KEY_AUTOPLAY_GIFS, value.autoplayGifs)
             putBoolean(KEY_SHOW_NAV_ARROWS, value.showNavArrows)
             putString(KEY_ANONYMOUS_FOLDERS, value.anonymousFolderIds.joinToString(","))
+            putString(KEY_NUMBERED_FOLDERS, value.numberedFolderIds.joinToString(","))
             putBoolean(KEY_RANDOMIZE_FILE_NAMES_IN_PRIVATE_FOLDERS, value.randomizeFileNamesInPrivateFolders)
             putBoolean(KEY_STRIP_EXIF_IN_PRIVATE_FOLDERS, value.stripExifInPrivateFolders)
             putBoolean(KEY_STRIP_EXIF_ON_SHARE, value.stripExifOnShare)
@@ -584,6 +608,7 @@ class SettingsStore(context: Context) {
             putInt(KEY_CUSTOM_WALLPAPER_UNFOLDED_W, value.customWallpaperUnfoldedWidth)
             putInt(KEY_CUSTOM_WALLPAPER_UNFOLDED_H, value.customWallpaperUnfoldedHeight)
             putBoolean(KEY_AUTO_FOLD_SPLIT_ENABLED, value.autoFoldSplitEnabled)
+            putBoolean(KEY_FOLD_SHOWS_FOLDERS, value.foldShowsFolders)
             putFloat(KEY_FOLD_SPLIT_ANGLE_THRESHOLD, value.foldSplitAngleThreshold)
             putBoolean(KEY_DYNAMIC_SPLIT, value.dynamicSplit)
             putBoolean(KEY_SHOW_FOLDABLE_SETTINGS, value.showFoldableSettings)
@@ -658,12 +683,15 @@ class SettingsStore(context: Context) {
         const val KEY_SHOW_HIDDEN = "show_hidden"
         const val KEY_ALBUM_ORDER = "album_order"
         const val KEY_VIDEO_DOUBLE_CLICK = "video_double_click_gallery"
+        const val KEY_VIDEOS_ONLY_IN_ALEXET = "videos_only_in_alexet"
+        const val KEY_PLAYER_LIKE_EXTERNAL = "player_like_external"
         const val KEY_NOMEDIA_PATHS = "nomedia_folder_paths"
         const val KEY_FAVORITE_MEDIA = "favorite_media_ids"
         const val KEY_HIDE_FAVORITES = "hide_favorites_folder"
         const val KEY_BAR_SLOTS = "bar_action_slots_v3"
         const val KEY_MENU_ORDER = "menu_action_order_v3"
         const val KEY_HIDDEN_SELECTION_ACTIONS = "hidden_selection_actions"
+        const val KEY_EXTRA_MENU_CARDS = "extra_menu_cards"
         const val KEY_REMEMBER_FOLDER_SCROLL = "remember_folder_scroll_across_sessions"
         const val KEY_NEW_CONTENT_SCROLLS_TO_TOP = "new_content_scrolls_to_top"
         const val KEY_SAVED_FOLDER_SCROLLS = "saved_folder_scrolls"
@@ -680,6 +708,7 @@ class SettingsStore(context: Context) {
         const val KEY_SMART_INDEX_PAUSED = "smart_index_paused"
         const val KEY_SHOW_NAV_ARROWS = "show_nav_arrows"
         const val KEY_ANONYMOUS_FOLDERS = "anonymous_folder_ids"
+        const val KEY_NUMBERED_FOLDERS = "numbered_folder_ids"
         const val KEY_RANDOMIZE_FILE_NAMES_IN_PRIVATE_FOLDERS = "randomize_file_names_in_private_folders"
         const val KEY_STRIP_EXIF_IN_PRIVATE_FOLDERS = "strip_exif_in_private_folders"
         const val KEY_STRIP_EXIF_ON_SHARE = "strip_exif_on_share"
@@ -701,6 +730,7 @@ class SettingsStore(context: Context) {
         const val KEY_LIGHT_MODE = "light_mode"
         const val KEY_FIRST_TIME_OPENED = "first_time_opened"
         const val KEY_AUTO_FOLD_SPLIT_ENABLED = "auto_fold_split_enabled"
+        const val KEY_FOLD_SHOWS_FOLDERS = "fold_shows_folders"
         const val KEY_FOLD_SPLIT_ANGLE_THRESHOLD = "fold_split_angle_threshold"
         const val KEY_DYNAMIC_SPLIT = "dynamic_split"
         const val KEY_SHOW_FOLDABLE_SETTINGS = "show_foldable_settings"
@@ -940,6 +970,23 @@ private fun parseCsvActionList(raw: String?, fallback: List<SelectionAction> = S
         }
     }
     return if (result.isEmpty()) fallback else result
+}
+
+/** Extra menu cards: empty cards are dropped, at most [AppSettings.MAX_MENU_CARDS] - 1 kept. */
+private fun parseMenuCards(array: JSONArray?): List<List<SelectionAction>> {
+    if (array == null) return emptyList()
+    return (0 until array.length())
+        .mapNotNull { i -> array.optJSONArray(i)?.let { parseActionList(it, emptyList()) } }
+        .filter { it.isNotEmpty() }
+        .take(AppSettings.MAX_MENU_CARDS - 1)
+}
+
+private fun parseCsvMenuCards(raw: String?): List<List<SelectionAction>> {
+    if (raw.isNullOrBlank()) return emptyList()
+    return raw.split(';')
+        .map { parseCsvActionList(it, emptyList()) }
+        .filter { it.isNotEmpty() }
+        .take(AppSettings.MAX_MENU_CARDS - 1)
 }
 
 private fun parseCsvActionSet(raw: String?): Set<SelectionAction> {

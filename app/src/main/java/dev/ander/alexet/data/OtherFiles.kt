@@ -78,8 +78,12 @@ object OtherFiles {
         val children = dir.listFiles() ?: return emptyList()
         val out = ArrayList<GalleryMedia>()
         for (file in children) {
-            if (!isListed(file)) continue
-            out += tile(file, file.length(), file.lastModified(), albumId, bucketName, relativePath)
+            if (!isListedName(file.name)) continue
+            // One stat gives what isFile and length() did (gone or not a plain file: left out).
+            // The date stays File.lastModified(): its precision can differ from the stat's.
+            val attrs = DirSnapshotCache.attributesOf(file) ?: continue
+            if (!attrs.isRegularFile) continue
+            out += tile(file, attrs.size(), file.lastModified(), albumId, bucketName, relativePath)
         }
         return out
     }

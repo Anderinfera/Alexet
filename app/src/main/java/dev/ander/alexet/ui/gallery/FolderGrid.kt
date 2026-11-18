@@ -3,7 +3,8 @@ package dev.ander.alexet.ui.gallery
 import dev.ander.alexet.ui.components.aiglow.aiGlint
 import dev.ander.alexet.ui.components.LocalLightMode
 import dev.ander.alexet.ui.components.AnimatedVisibility
-import dev.ander.alexet.ui.components.Crossfade
+import dev.ander.alexet.ui.components.DeferredCrossfade
+import dev.ander.alexet.ui.components.deferredAnimateFloatAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -77,14 +78,12 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -104,6 +103,13 @@ import dev.ander.alexet.ui.components.MediaThumbnail
 
 private val FolderGap = 1.dp
 
+/** The dark band under a folder's name; one for all tiles. */
+private val FolderNameBand = Brush.verticalGradient(
+    0f to Color.Transparent,
+    0.45f to Color.Black.copy(alpha = 0.28f),
+    1f to Color.Black.copy(alpha = 0.72f),
+)
+
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 @Suppress("UNUSED_PARAMETER")
@@ -121,7 +127,8 @@ fun FolderGrid(
     onFolderDragStart: (Long) -> Unit,
     onFolderDrag: (Offset) -> Unit,
     onFolderDragEnd: () -> Unit,
-    onAlbumBounds: (Long, Rect) -> Unit,
+    /** A tile's layout coordinates (its window bounds are worked out when read); null: no drop target. */
+    onAlbumBounds: (Long, LayoutCoordinates?) -> Unit,
     gridState: LazyGridState,
     modifier: Modifier = Modifier,
     selectedAlbumIds: Set<Long> = emptySet(),
@@ -146,17 +153,25 @@ fun FolderGrid(
                 .background(Color.Black),
             contentAlignment = Alignment.Center,
         ) {
-            LoadingIndicator(
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(64.dp),
-            )
+            if (LocalLightMode.current) {
+                // Light mode: a plain spinner instead of the morphing shapes.
+                androidx.compose.material3.CircularProgressIndicator(
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(64.dp),
+                )
+            } else {
+                LoadingIndicator(
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(64.dp),
+                )
+            }
         }
         return
     }
 
-    val itemBounds = remember { mutableMapOf<Long, Rect>() }
+    val itemBounds = remember { TileBounds() }
     val albumIds = remember(safeAlbums) { safeAlbums.map { it.id }.toSet() }
-    SideEffect { itemBounds.keys.retainAll(albumIds) }
+    SideEffect { itemBounds.retainAll(albumIds) }
 
     var marqueeActive by remember { mutableStateOf(false) }
     var liveSelectedAlbumIds by remember { mutableStateOf(selectedAlbumIds.toList()) }
@@ -205,10 +220,10 @@ fun FolderGrid(
         ) {
             items(safeAlbums, key = { it.id }) { album ->
                 // A disposed tile (scrolled away, or grid replaced by folder/search layer)
-                // must stop being a drop target: an empty Rect never contains a point.
+                // must stop being a drop target.
                 DisposableEffect(album.id) {
                     onDispose {
-                        onAlbumBounds(album.id, Rect.Zero)
+                        onAlbumBounds(album.id, null)
                         itemBounds.remove(album.id)
                     }
                 }
@@ -246,7 +261,7 @@ fun FolderGrid(
                             onAlbumBounds(album.id, it)
                             itemBounds[album.id] = it
                         } else {
-                            onAlbumBounds(album.id, Rect.Zero)
+                            onAlbumBounds(album.id, null)
                             itemBounds.remove(album.id)
                         }
                     },
@@ -273,10 +288,12 @@ private fun LazyGridItemScope.FolderTile(
     onDragStart: () -> Unit,
     onDrag: (Offset) -> Unit,
     onDragEnd: () -> Unit,
-    onBounds: (Rect) -> Unit,
+    onBounds: (LayoutCoordinates) -> Unit,
 ) {
-    val pulseAlpha by animateFloatAsState(
+    // Most tiles never pulse, hover or get stamped: nothing animates until one first does.
+    val pulseAlpha by deferredAnimateFloatAsState(
         targetValue = if (highlighted) 1f else 0f,
+        restingValue = 0f,
         animationSpec = if (highlighted) {
             snap()
         } else {
@@ -284,12 +301,14 @@ private fun LazyGridItemScope.FolderTile(
         },
         label = "tilePulse",
     )
-    val hoverScale by animateFloatAsState(
+    val hoverScale by deferredAnimateFloatAsState(
         targetValue = if (hovered) 1.06f else 1f,
+        restingValue = 1f,
         label = "folderHover",
     )
-    val stampedScale by animateFloatAsState(
+    val stampedScale by deferredAnimateFloatAsState(
         targetValue = if (stamped) 0.93f else 1f,
+        restingValue = 1f,
         animationSpec = spring(stiffness = Spring.StiffnessMediumLow, dampingRatio = Spring.DampingRatioMediumBouncy),
         label = "folderStampedScale",
     )
@@ -309,7 +328,8 @@ private fun LazyGridItemScope.FolderTile(
             }
             .onGloballyPositioned { layout ->
                 coords = layout
-                onBounds(layout.boundsInWindow())
+                // Only the coordinates: the bounds are worked out when a gesture needs them.
+                onBounds(layout)
             }
             .then(
                 if (deleting != null) {
@@ -337,7 +357,7 @@ private fun LazyGridItemScope.FolderTile(
         // The last progress stays drawn while the tile fades back (cancelled, some files left).
         var lastDeleting by remember { mutableStateOf(deleting) }
         if (deleting != null) lastDeleting = deleting
-        Crossfade(targetState = deleting != null, label = "folderDeleting") { isDeleting ->
+        DeferredCrossfade(targetState = deleting != null, label = "folderDeleting") { isDeleting ->
             val progress = lastDeleting
             if (isDeleting && progress != null) {
                 DeletingFolderCover(progress = progress, onCancel = onCancelDelete)
@@ -370,7 +390,8 @@ private fun DeletingFolderCover(progress: FolderDeleteProgress, onCancel: () -> 
         label = "folderDeleteFraction",
     )
     // Light mode: no endless animation, the trash stays upright.
-    val swing = if (LocalLightMode.current) {
+    val light = LocalLightMode.current
+    val swing = if (light) {
         0f
     } else {
         val tilt = rememberInfiniteTransition(label = "trashTilt")
@@ -395,12 +416,22 @@ private fun DeletingFolderCover(progress: FolderDeleteProgress, onCancel: () -> 
         val ring = side * if (showCancel) 0.48f else 0.62f
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Box(Modifier.size(ring), contentAlignment = Alignment.Center) {
-                CircularWavyProgressIndicator(
-                    progress = { fraction },
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.secondaryContainer,
-                )
+                if (light) {
+                    // Light mode: a plain ring, no wave moving every frame.
+                    androidx.compose.material3.CircularProgressIndicator(
+                        progress = { fraction },
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.secondaryContainer,
+                    )
+                } else {
+                    CircularWavyProgressIndicator(
+                        progress = { fraction },
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.secondaryContainer,
+                    )
+                }
                 Icon(
                     imageVector = Icons.Rounded.Delete,
                     contentDescription = null,
@@ -501,16 +532,32 @@ fun FolderCover(
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .height(72.dp)
-                .background(
-                    Brush.verticalGradient(
-                        0f to Color.Transparent,
-                        0.45f to Color.Black.copy(alpha = 0.28f),
-                        1f to Color.Black.copy(alpha = 0.72f),
-                    ),
-                ),
+                .background(FolderNameBand),
         )
         // Light mode: the names without their blurred shadow (the dark band under them stays).
         val textShadows = !LocalLightMode.current
+        val titleSmall = MaterialTheme.typography.titleSmall
+        val bodySmall = MaterialTheme.typography.bodySmall
+        val nameStyle = remember(titleSmall, textShadows) {
+            titleSmall.copy(
+                color = Color.White,
+                shadow = if (!textShadows) null else Shadow(
+                    color = Color.Black.copy(alpha = 0.55f),
+                    offset = Offset(0f, 1f),
+                    blurRadius = 4f,
+                ),
+            )
+        }
+        val countStyle = remember(bodySmall, textShadows) {
+            bodySmall.copy(
+                color = Color.White.copy(alpha = 0.92f),
+                shadow = if (!textShadows) null else Shadow(
+                    color = Color.Black.copy(alpha = 0.5f),
+                    offset = Offset(0f, 1f),
+                    blurRadius = 3f,
+                ),
+            )
+        }
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
@@ -523,28 +570,14 @@ fun FolderCover(
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.titleSmall.copy(
-                    color = Color.White,
-                    shadow = if (!textShadows) null else Shadow(
-                        color = Color.Black.copy(alpha = 0.55f),
-                        offset = Offset(0f, 1f),
-                        blurRadius = 4f,
-                    ),
-                ),
+                style = nameStyle,
             )
             Text(
-                text = album.itemCount.toString(),
+                text = if (album.otherCount > 0) "${album.itemCount} (+${album.otherCount})" else album.itemCount.toString(),
                 color = Color.White.copy(alpha = 0.92f),
                 fontSize = 13.sp,
                 maxLines = 1,
-                style = MaterialTheme.typography.bodySmall.copy(
-                    color = Color.White.copy(alpha = 0.92f),
-                    shadow = if (!textShadows) null else Shadow(
-                        color = Color.Black.copy(alpha = 0.5f),
-                        offset = Offset(0f, 1f),
-                        blurRadius = 3f,
-                    ),
-                ),
+                style = countStyle,
             )
         }
         if (hidden || isAnonymous) {

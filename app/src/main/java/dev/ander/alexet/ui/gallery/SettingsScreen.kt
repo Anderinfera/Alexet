@@ -1,6 +1,8 @@
 package dev.ander.alexet.ui.gallery
 
+import android.widget.Toast
 import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.SmartDisplay
 import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.BlurOn
@@ -64,7 +66,6 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlin.math.roundToInt
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -201,6 +202,8 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -315,10 +318,12 @@ fun SettingsScreen(
     onFileSelectMode: (FileSelectMode) -> Unit,
     onShowHidden: (Boolean) -> Unit,
     onHideFavoritesFolder: (Boolean) -> Unit,
-    onSaveSelectionActionsConfig: (List<SelectionAction?>, List<SelectionAction>, Set<SelectionAction>) -> Unit,
+    onSaveSelectionActionsConfig: (List<SelectionAction?>, List<SelectionAction>, Set<SelectionAction>, List<List<SelectionAction>>) -> Unit,
     onToggleSelectionActionVisibility: (SelectionAction) -> Unit,
     onSearchFilesFullScreen: (Boolean) -> Unit,
     onVideoDoubleClickToGallery: (Boolean) -> Unit,
+    onVideosOnlyInAlexet: (Boolean) -> Unit,
+    onPlayerLikeExternal: (Boolean) -> Unit,
     onRememberFolderScrollAcrossSessions: (Boolean) -> Unit = {},
     onNewContentScrollsToTop: (Boolean) -> Unit = {},
     onAutoplayGifs: (Boolean) -> Unit = {},
@@ -337,6 +342,7 @@ fun SettingsScreen(
     onHighResThumbnails: (Boolean) -> Unit = {},
     onLightMode: (Boolean) -> Unit = {},
     onAutoFoldSplitEnabled: (Boolean) -> Unit = {},
+    onFoldShowsFolders: (Boolean) -> Unit = {},
     onDynamicSplit: (Boolean) -> Unit = {},
     onFoldSplitAngleThreshold: (Float) -> Unit = {},
     onShowFoldableSettings: (Boolean) -> Unit = {},
@@ -348,18 +354,10 @@ fun SettingsScreen(
     BackHandler(onBack = onBack)
     var folderHelpTopic by rememberSaveable { mutableStateOf<FolderHelpTopic?>(null) }
     var showPaneSplitHelp by rememberSaveable { mutableStateOf(false) }
-    var showViewHelp by rememberSaveable { mutableStateOf(false) }
-    var showSelectHelp by rememberSaveable { mutableStateOf(false) }
-    var showBehaviorHelp by rememberSaveable { mutableStateOf(false) }
-    var showSelectionHelp by rememberSaveable { mutableStateOf(false) }
-    var showSearchHelp by rememberSaveable { mutableStateOf(false) }
-    var showActionCardsHelp by rememberSaveable { mutableStateOf(false) }
     var showPrivacyHelp by rememberSaveable { mutableStateOf(false) }
     var showPrivatizedFoldersDialog by rememberSaveable { mutableStateOf(false) }
     var showNewpipeFolderDialog by rememberSaveable { mutableStateOf(false) }
     var showWallpaperResolutionsDialog by rememberSaveable { mutableStateOf(false) }
-    var showConfigHelp by rememberSaveable { mutableStateOf(false) }
-    var showMaintenanceHelp by rememberSaveable { mutableStateOf(false) }
     var isDraggingActionCard by remember { mutableStateOf(false) }
     var selectedCategory by rememberSaveable { mutableStateOf(SettingsCategory.VIEW) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
@@ -410,6 +408,8 @@ fun SettingsScreen(
                 onToggleSelectionActionVisibility = onToggleSelectionActionVisibility,
                 onSearchFilesFullScreen = onSearchFilesFullScreen,
                 onVideoDoubleClickToGallery = onVideoDoubleClickToGallery,
+                onVideosOnlyInAlexet = onVideosOnlyInAlexet,
+                onPlayerLikeExternal = onPlayerLikeExternal,
                 onRememberFolderScrollAcrossSessions = onRememberFolderScrollAcrossSessions,
                 onNewContentScrollsToTop = onNewContentScrollsToTop,
                 onAutoplayGifs = onAutoplayGifs,
@@ -428,6 +428,7 @@ fun SettingsScreen(
                 onHighResThumbnails = onHighResThumbnails,
                 onLightMode = onLightMode,
                 onAutoFoldSplitEnabled = onAutoFoldSplitEnabled,
+                onFoldShowsFolders = onFoldShowsFolders,
                 onDynamicSplit = onDynamicSplit,
                 onFoldSplitAngleThreshold = onFoldSplitAngleThreshold,
                 onShowFoldableSettings = onShowFoldableSettings,
@@ -437,19 +438,12 @@ fun SettingsScreen(
                 onPickHiddenCoverImage = onPickHiddenCoverImage,
                 onRandomizeFileNamesInPrivateFolders = onRandomizeFileNamesInPrivateFolders,
                 onStripExifInPrivateFolders = onStripExifInPrivateFolders,
-                onShowViewHelp = { showViewHelp = true },
                 onShowPaneSplitHelp = { showPaneSplitHelp = true },
                 onShowWallpaperResolutionsDialog = { showWallpaperResolutionsDialog = true },
                 onShowFolderHelp = { folderHelpTopic = it },
                 onShowPrivacyHelp = { showPrivacyHelp = true },
                 onShowPrivatizedFoldersDialog = { showPrivatizedFoldersDialog = true },
-                onShowBehaviorHelp = { showBehaviorHelp = true },
                 onShowNewpipeFolderDialog = { showNewpipeFolderDialog = true },
-                onShowSelectHelp = { showSelectHelp = true },
-                onShowActionCardsHelp = { showActionCardsHelp = true },
-                onShowMaintenanceHelp = { showMaintenanceHelp = true },
-                onShowSelectionHelp = { showSelectionHelp = true },
-                onShowSearchHelp = { showSearchHelp = true },
                 onDraggingChanged = { isDraggingActionCard = it },
             )
         } else {
@@ -486,6 +480,8 @@ fun SettingsScreen(
                 onToggleSelectionActionVisibility = onToggleSelectionActionVisibility,
                 onSearchFilesFullScreen = onSearchFilesFullScreen,
                 onVideoDoubleClickToGallery = onVideoDoubleClickToGallery,
+                onVideosOnlyInAlexet = onVideosOnlyInAlexet,
+                onPlayerLikeExternal = onPlayerLikeExternal,
                 onRememberFolderScrollAcrossSessions = onRememberFolderScrollAcrossSessions,
                 onNewContentScrollsToTop = onNewContentScrollsToTop,
                 onAutoplayGifs = onAutoplayGifs,
@@ -504,6 +500,7 @@ fun SettingsScreen(
                 onHighResThumbnails = onHighResThumbnails,
                 onLightMode = onLightMode,
                 onAutoFoldSplitEnabled = onAutoFoldSplitEnabled,
+                onFoldShowsFolders = onFoldShowsFolders,
                 onDynamicSplit = onDynamicSplit,
                 onFoldSplitAngleThreshold = onFoldSplitAngleThreshold,
                 onShowFoldableSettings = onShowFoldableSettings,
@@ -513,19 +510,12 @@ fun SettingsScreen(
                 onPickHiddenCoverImage = onPickHiddenCoverImage,
                 onRandomizeFileNamesInPrivateFolders = onRandomizeFileNamesInPrivateFolders,
                 onStripExifInPrivateFolders = onStripExifInPrivateFolders,
-                onShowViewHelp = { showViewHelp = true },
                 onShowPaneSplitHelp = { showPaneSplitHelp = true },
                 onShowWallpaperResolutionsDialog = { showWallpaperResolutionsDialog = true },
                 onShowFolderHelp = { folderHelpTopic = it },
                 onShowPrivacyHelp = { showPrivacyHelp = true },
                 onShowPrivatizedFoldersDialog = { showPrivatizedFoldersDialog = true },
-                onShowBehaviorHelp = { showBehaviorHelp = true },
                 onShowNewpipeFolderDialog = { showNewpipeFolderDialog = true },
-                onShowSelectHelp = { showSelectHelp = true },
-                onShowActionCardsHelp = { showActionCardsHelp = true },
-                onShowMaintenanceHelp = { showMaintenanceHelp = true },
-                onShowSelectionHelp = { showSelectionHelp = true },
-                onShowSearchHelp = { showSearchHelp = true },
                 onDraggingChanged = { isDraggingActionCard = it },
             )
         }
@@ -540,29 +530,11 @@ fun SettingsScreen(
         PaneSplitHelpDialog(onDismiss = { showPaneSplitHelp = false })
     }
 
-    if (showViewHelp) {
-        ViewHelpDialog(onDismiss = { showViewHelp = false })
-    }
 
-    if (showSelectHelp) {
-        SelectHelpDialog(onDismiss = { showSelectHelp = false })
-    }
 
-    if (showBehaviorHelp) {
-        BehaviorHelpDialog(onDismiss = { showBehaviorHelp = false })
-    }
 
-    if (showSelectionHelp) {
-        SelectionHelpDialog(onDismiss = { showSelectionHelp = false })
-    }
 
-    if (showSearchHelp) {
-        SearchHelpDialog(onDismiss = { showSearchHelp = false })
-    }
 
-    if (showActionCardsHelp) {
-        ActionCardsHelpDialog(onDismiss = { showActionCardsHelp = false })
-    }
 
     if (showPrivacyHelp) {
         PrivacyHelpDialog(onDismiss = { showPrivacyHelp = false })
@@ -598,13 +570,7 @@ fun SettingsScreen(
         )
     }
 
-    if (showConfigHelp) {
-        ConfigHelpDialog(onDismiss = { showConfigHelp = false })
-    }
 
-    if (showMaintenanceHelp) {
-        MaintenanceHelpDialog(onDismiss = { showMaintenanceHelp = false })
-    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -637,10 +603,12 @@ private fun MasterDetailSettingsLayout(
     onFileSelectMode: (FileSelectMode) -> Unit,
     onShowHidden: (Boolean) -> Unit,
     onHideFavoritesFolder: (Boolean) -> Unit,
-    onSaveSelectionActionsConfig: (List<SelectionAction?>, List<SelectionAction>, Set<SelectionAction>) -> Unit,
+    onSaveSelectionActionsConfig: (List<SelectionAction?>, List<SelectionAction>, Set<SelectionAction>, List<List<SelectionAction>>) -> Unit,
     onToggleSelectionActionVisibility: (SelectionAction) -> Unit,
     onSearchFilesFullScreen: (Boolean) -> Unit,
     onVideoDoubleClickToGallery: (Boolean) -> Unit,
+    onVideosOnlyInAlexet: (Boolean) -> Unit,
+    onPlayerLikeExternal: (Boolean) -> Unit,
     onRememberFolderScrollAcrossSessions: (Boolean) -> Unit,
     onNewContentScrollsToTop: (Boolean) -> Unit,
     onAutoplayGifs: (Boolean) -> Unit,
@@ -659,6 +627,7 @@ private fun MasterDetailSettingsLayout(
     onHighResThumbnails: (Boolean) -> Unit,
     onLightMode: (Boolean) -> Unit,
     onAutoFoldSplitEnabled: (Boolean) -> Unit,
+    onFoldShowsFolders: (Boolean) -> Unit,
     onDynamicSplit: (Boolean) -> Unit,
     onFoldSplitAngleThreshold: (Float) -> Unit,
     onShowFoldableSettings: (Boolean) -> Unit,
@@ -668,19 +637,12 @@ private fun MasterDetailSettingsLayout(
     onPickHiddenCoverImage: (android.net.Uri) -> Unit,
     onRandomizeFileNamesInPrivateFolders: (Boolean) -> Unit,
     onStripExifInPrivateFolders: (Boolean) -> Unit,
-    onShowViewHelp: () -> Unit,
     onShowPaneSplitHelp: () -> Unit,
     onShowWallpaperResolutionsDialog: () -> Unit,
     onShowFolderHelp: (FolderHelpTopic) -> Unit,
     onShowPrivacyHelp: () -> Unit,
     onShowPrivatizedFoldersDialog: () -> Unit,
-    onShowBehaviorHelp: () -> Unit,
     onShowNewpipeFolderDialog: () -> Unit,
-    onShowSelectHelp: () -> Unit,
-    onShowActionCardsHelp: () -> Unit,
-    onShowMaintenanceHelp: () -> Unit,
-    onShowSelectionHelp: () -> Unit,
-    onShowSearchHelp: () -> Unit,
     onDraggingChanged: (Boolean) -> Unit,
 ) {
     val masterScrollState = listScrollState
@@ -760,8 +722,6 @@ private fun MasterDetailSettingsLayout(
                     modifier = Modifier.weight(1f),
                     label = "SettingsDetailTitleAnim",
                 ) { cat ->
-                    // Title and help button change together: the button opens the help of the
-                    // category whose title is shown.
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = stringResource(cat.titleRes),
@@ -770,27 +730,6 @@ private fun MasterDetailSettingsLayout(
                             color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.weight(1f),
                         )
-                        if (cat != SettingsCategory.FOLDERS) IconButton(
-                            onClick = {
-                                when (cat) {
-                                    SettingsCategory.VIEW -> onShowViewHelp()
-                                    SettingsCategory.FOLDERS -> Unit
-                                    SettingsCategory.SELECTION -> onShowSelectionHelp()
-                                    SettingsCategory.VIEWING -> onShowBehaviorHelp()
-                                    SettingsCategory.SEARCH -> onShowSearchHelp()
-                                    SettingsCategory.PRIVACY -> onShowPrivacyHelp()
-                                    SettingsCategory.APP -> onShowMaintenanceHelp()
-                                }
-                            },
-                            modifier = Modifier.size(36.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Info,
-                                contentDescription = stringResource(R.string.settings_help_for, stringResource(cat.titleRes)),
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(24.dp),
-                            )
-                        }
                     }
                 }
             }
@@ -830,6 +769,7 @@ private fun MasterDetailSettingsLayout(
                             onFoldableFileColumns = onFoldableFileColumns,
                             onPanelSplitPercent = onPanelSplitPercent,
                             onAutoFoldSplitEnabled = onAutoFoldSplitEnabled,
+                            onFoldShowsFolders = onFoldShowsFolders,
                             onDynamicSplit = onDynamicSplit,
                             onFoldSplitAngleThreshold = onFoldSplitAngleThreshold,
                             onShowFoldableSettings = onShowFoldableSettings,
@@ -840,7 +780,6 @@ private fun MasterDetailSettingsLayout(
                             onScrollerEnabled = onScrollerEnabled,
                             onScrollerOnRight = onScrollerOnRight,
                             onScrollerSmooth = onScrollerSmooth,
-                            onShowViewHelp = onShowViewHelp,
                             onShowPaneSplitHelp = onShowPaneSplitHelp,
                         )
                         SettingsCategory.FOLDERS -> FoldersSettingsSectionContent(
@@ -863,18 +802,17 @@ private fun MasterDetailSettingsLayout(
                             onOperationsFollowSelectionOrder = onOperationsFollowSelectionOrder,
                             onSaveSelectionActionsConfig = onSaveSelectionActionsConfig,
                             onToggleSelectionActionVisibility = onToggleSelectionActionVisibility,
-                            onShowSelectHelp = onShowSelectHelp,
-                            onShowActionCardsHelp = onShowActionCardsHelp,
                             onDraggingChanged = onDraggingChanged,
                         )
                         SettingsCategory.VIEWING -> PlayerSettingsSectionContent(
                             settings = settings,
                             showHeader = false,
                             onVideoDoubleClickToGallery = onVideoDoubleClickToGallery,
+                            onVideosOnlyInAlexet = onVideosOnlyInAlexet,
+                            onPlayerLikeExternal = onPlayerLikeExternal,
                             onUpdatePlayerConfig = onUpdatePlayerConfig,
                             onAutoplayGifs = onAutoplayGifs,
                             onShowNavArrows = onShowNavArrows,
-                            onShowBehaviorHelp = onShowBehaviorHelp,
                         )
                         SettingsCategory.SEARCH -> SearchSettingsSectionContent(
                             settings = settings,
@@ -907,7 +845,6 @@ private fun MasterDetailSettingsLayout(
                             onClearDebugLog = onClearDebugLog,
                             onImportConfig = onImportConfig,
                             onResetThumbnails = onResetThumbnails,
-                            onShowMaintenanceHelp = onShowMaintenanceHelp,
                         )
                     }
                 }
@@ -1264,10 +1201,12 @@ private fun PhoneSettingsLayout(
     onFileSelectMode: (FileSelectMode) -> Unit,
     onShowHidden: (Boolean) -> Unit,
     onHideFavoritesFolder: (Boolean) -> Unit,
-    onSaveSelectionActionsConfig: (List<SelectionAction?>, List<SelectionAction>, Set<SelectionAction>) -> Unit,
+    onSaveSelectionActionsConfig: (List<SelectionAction?>, List<SelectionAction>, Set<SelectionAction>, List<List<SelectionAction>>) -> Unit,
     onToggleSelectionActionVisibility: (SelectionAction) -> Unit,
     onSearchFilesFullScreen: (Boolean) -> Unit,
     onVideoDoubleClickToGallery: (Boolean) -> Unit,
+    onVideosOnlyInAlexet: (Boolean) -> Unit,
+    onPlayerLikeExternal: (Boolean) -> Unit,
     onRememberFolderScrollAcrossSessions: (Boolean) -> Unit,
     onNewContentScrollsToTop: (Boolean) -> Unit,
     onAutoplayGifs: (Boolean) -> Unit,
@@ -1286,6 +1225,7 @@ private fun PhoneSettingsLayout(
     onHighResThumbnails: (Boolean) -> Unit,
     onLightMode: (Boolean) -> Unit,
     onAutoFoldSplitEnabled: (Boolean) -> Unit,
+    onFoldShowsFolders: (Boolean) -> Unit,
     onDynamicSplit: (Boolean) -> Unit,
     onFoldSplitAngleThreshold: (Float) -> Unit,
     onShowFoldableSettings: (Boolean) -> Unit,
@@ -1295,19 +1235,12 @@ private fun PhoneSettingsLayout(
     onPickHiddenCoverImage: (android.net.Uri) -> Unit,
     onRandomizeFileNamesInPrivateFolders: (Boolean) -> Unit,
     onStripExifInPrivateFolders: (Boolean) -> Unit,
-    onShowViewHelp: () -> Unit,
     onShowPaneSplitHelp: () -> Unit,
     onShowWallpaperResolutionsDialog: () -> Unit,
     onShowFolderHelp: (FolderHelpTopic) -> Unit,
     onShowPrivacyHelp: () -> Unit,
     onShowPrivatizedFoldersDialog: () -> Unit,
-    onShowBehaviorHelp: () -> Unit,
     onShowNewpipeFolderDialog: () -> Unit,
-    onShowSelectHelp: () -> Unit,
-    onShowActionCardsHelp: () -> Unit,
-    onShowMaintenanceHelp: () -> Unit,
-    onShowSelectionHelp: () -> Unit,
-    onShowSearchHelp: () -> Unit,
     onDraggingChanged: (Boolean) -> Unit,
 ) {
     // scrollStates: one scroll position per category, kept while going back to the list.
@@ -1410,27 +1343,6 @@ private fun PhoneSettingsLayout(
                                         )
                                     }
                                 },
-                                actions = {
-                                    if (open != SettingsCategory.FOLDERS) IconButton(
-                                        onClick = {
-                                            when (open) {
-                                                SettingsCategory.VIEW -> onShowViewHelp()
-                                                SettingsCategory.FOLDERS -> Unit
-                                                SettingsCategory.SELECTION -> onShowSelectionHelp()
-                                                SettingsCategory.VIEWING -> onShowBehaviorHelp()
-                                                SettingsCategory.SEARCH -> onShowSearchHelp()
-                                                SettingsCategory.PRIVACY -> onShowPrivacyHelp()
-                                                SettingsCategory.APP -> onShowMaintenanceHelp()
-                                            }
-                                        },
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Info,
-                                            contentDescription = stringResource(R.string.settings_help_for, stringResource(open.titleRes)),
-                                            tint = MaterialTheme.colorScheme.primary,
-                                        )
-                                    }
-                                },
                                 colors = TopAppBarDefaults.topAppBarColors(
                                     containerColor = MaterialTheme.colorScheme.surface,
                                 ),
@@ -1457,6 +1369,7 @@ private fun PhoneSettingsLayout(
                                     onFoldableFileColumns = onFoldableFileColumns,
                                     onPanelSplitPercent = onPanelSplitPercent,
                                     onAutoFoldSplitEnabled = onAutoFoldSplitEnabled,
+                                    onFoldShowsFolders = onFoldShowsFolders,
                                     onDynamicSplit = onDynamicSplit,
                                     onFoldSplitAngleThreshold = onFoldSplitAngleThreshold,
                                     onShowFoldableSettings = onShowFoldableSettings,
@@ -1467,7 +1380,6 @@ private fun PhoneSettingsLayout(
                                     onScrollerEnabled = onScrollerEnabled,
                                     onScrollerOnRight = onScrollerOnRight,
                                     onScrollerSmooth = onScrollerSmooth,
-                                    onShowViewHelp = onShowViewHelp,
                                     onShowPaneSplitHelp = onShowPaneSplitHelp,
                                 )
                                 SettingsCategory.FOLDERS -> FoldersSettingsSectionContent(
@@ -1490,18 +1402,17 @@ private fun PhoneSettingsLayout(
                                     onOperationsFollowSelectionOrder = onOperationsFollowSelectionOrder,
                                     onSaveSelectionActionsConfig = onSaveSelectionActionsConfig,
                                     onToggleSelectionActionVisibility = onToggleSelectionActionVisibility,
-                                    onShowSelectHelp = onShowSelectHelp,
-                                    onShowActionCardsHelp = onShowActionCardsHelp,
                                     onDraggingChanged = onDraggingChanged,
                                 )
                                 SettingsCategory.VIEWING -> PlayerSettingsSectionContent(
                                     settings = settings,
                                     showHeader = false,
                                     onVideoDoubleClickToGallery = onVideoDoubleClickToGallery,
+                                    onVideosOnlyInAlexet = onVideosOnlyInAlexet,
+                                    onPlayerLikeExternal = onPlayerLikeExternal,
                                     onUpdatePlayerConfig = onUpdatePlayerConfig,
                                     onAutoplayGifs = onAutoplayGifs,
                                     onShowNavArrows = onShowNavArrows,
-                                    onShowBehaviorHelp = onShowBehaviorHelp,
                                 )
                                 SettingsCategory.SEARCH -> SearchSettingsSectionContent(
                                     settings = settings,
@@ -1534,7 +1445,6 @@ private fun PhoneSettingsLayout(
                                     onClearDebugLog = onClearDebugLog,
                                     onImportConfig = onImportConfig,
                                     onResetThumbnails = onResetThumbnails,
-                                    onShowMaintenanceHelp = onShowMaintenanceHelp,
                                 )
                             }
                         }
@@ -1570,6 +1480,7 @@ private fun ViewSettingsSectionContent(
     onFoldableFileColumns: (Int) -> Unit,
     onPanelSplitPercent: (Int) -> Unit,
     onAutoFoldSplitEnabled: (Boolean) -> Unit,
+    onFoldShowsFolders: (Boolean) -> Unit,
     onDynamicSplit: (Boolean) -> Unit,
     onFoldSplitAngleThreshold: (Float) -> Unit,
     onShowFoldableSettings: (Boolean) -> Unit,
@@ -1580,21 +1491,18 @@ private fun ViewSettingsSectionContent(
     onScrollerEnabled: (Boolean) -> Unit,
     onScrollerOnRight: (Boolean) -> Unit,
     onScrollerSmooth: (Boolean) -> Unit,
-    onShowViewHelp: () -> Unit,
     onShowPaneSplitHelp: () -> Unit,
 ) {
     if (showHeader) {
         SettingsSectionHeader(
             title = stringResource(R.string.settings_category_view),
             icon = Icons.Rounded.GridView,
-            onInfoClick = onShowViewHelp,
-            infoDescription = stringResource(R.string.settings_help_for, stringResource(SettingsCategory.VIEW.titleRes)),
         )
     }
     SettingsCardContainer {
         // Phone and tablet tabs (this device first), each with its own options and the shared ones.
         // Without the two-panel options (no foldable, switch below off) there is only the phone.
-        val wideNow = !foldable.isTabletop && (foldable.showListDetail || LocalConfiguration.current.screenWidthDp >= 600)
+        val wideNow = foldable.showListDetail || LocalConfiguration.current.screenWidthDp >= 600
         var chosenDevice by rememberSaveable { mutableStateOf(if (wideNow) PreviewDevice.TABLET else PreviewDevice.PHONE) }
         val previewDevice = if (settings.extraViewSettingsShown) chosenDevice else PreviewDevice.PHONE
         // A search result in the other tab opens that tab.
@@ -1634,28 +1542,51 @@ private fun ViewSettingsSectionContent(
             enabled = !settings.foldableDetected,
             onCheckedChange = onShowFoldableSettings,
             icon = Icons.Rounded.Devices,
-            preview = { OptionPreview(OptionPreviewKind.EXTRA_VIEW, active = settings.extraViewSettingsShown) },
+            // A foldable shows itself opening into two panes; another phone, turned sideways.
+            preview = {
+                OptionPreview(
+                    if (settings.foldableDetected) OptionPreviewKind.EXTRA_VIEW_FOLDABLE else OptionPreviewKind.EXTRA_VIEW,
+                    active = settings.extraViewSettingsShown,
+                )
+            },
         )
-        SettingsItemDivider(startIndent = 0.dp)
-        if (settings.extraViewSettingsShown) {
-            Text(
-                text = stringResource(R.string.view_preview_device),
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(start = 4.dp, top = 4.dp, bottom = 4.dp),
+        val tabbed = settings.extraViewSettingsShown
+        if (tabbed) Spacer(Modifier.height(12.dp)) else SettingsItemDivider(startIndent = 0.dp)
+        // One frame holds the tabs and every option they switch, so it shows where those start and end.
+        val frameShape = RoundedCornerShape(16.dp)
+        Column(
+            modifier = if (!tabbed) Modifier.fillMaxWidth() else Modifier
+                .fillMaxWidth()
+                .border(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f), frameShape)
+                .clip(frameShape)
+                .background(MaterialTheme.colorScheme.surfaceContainerLow),
+        ) {
+        if (tabbed) {
+            // Tabs, not an option: the phone's and the tablet's settings are two pages of this card.
+            val devices = listOf(
+                Triple(PreviewDevice.PHONE, R.string.view_preview_phone, Icons.Rounded.PhoneAndroid),
+                Triple(PreviewDevice.TABLET, R.string.view_preview_tablet, Icons.Rounded.TabletAndroid),
             )
-            SettingsSegmentedRow(
-                options = listOf(
-                    PreviewDevice.PHONE to stringResource(R.string.view_preview_phone),
-                    PreviewDevice.TABLET to stringResource(R.string.view_preview_tablet),
-                ),
-                selected = chosenDevice,
-                onSelect = { chosenDevice = it },
-                modifier = Modifier.padding(bottom = 8.dp),
-            )
-            SettingsItemDivider(startIndent = 0.dp)
+            val deviceLabel = stringResource(R.string.view_preview_device)
+            androidx.compose.material3.PrimaryTabRow(
+                selectedTabIndex = devices.indexOfFirst { it.first == chosenDevice }.coerceAtLeast(0),
+                // A tinted strip: the frame's header.
+                containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                modifier = Modifier.semantics { contentDescription = deviceLabel },
+            ) {
+                devices.forEach { (device, label, icon) ->
+                    androidx.compose.material3.Tab(
+                        selected = chosenDevice == device,
+                        onClick = { chosenDevice = device },
+                        text = { Text(stringResource(label), fontWeight = FontWeight.SemiBold) },
+                        icon = { Icon(icon, contentDescription = null) },
+                        selectedContentColor = MaterialTheme.colorScheme.primary,
+                        unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
+        Column(if (tabbed) Modifier.padding(horizontal = 10.dp, vertical = 12.dp) else Modifier) {
         // Two-panel options: the tablet tab.
         if (previewDevice == PreviewDevice.TABLET) {
             Column(modifier = Modifier.settingsSearchTarget(R.string.content_view_title)) {
@@ -2088,6 +2019,16 @@ private fun ViewSettingsSectionContent(
 
                     // Fold options: only on a foldable (they never apply elsewhere).
                     if (settings.foldOnlySettingsShown) {
+                        // Folding with a folder open: the outer screen shows the folders.
+                        SettingsSwitchRow(
+                            title = stringResource(R.string.fold_shows_folders_title),
+                            modifier = Modifier.settingsSearchTarget(R.string.fold_shows_folders_title),
+                            body = stringResource(R.string.fold_shows_folders_body),
+                            checked = settings.foldShowsFolders,
+                            onCheckedChange = onFoldShowsFolders,
+                            icon = Icons.Rounded.GridView,
+                            preview = { OptionPreview(OptionPreviewKind.FOLD_SHOWS_FOLDERS, active = settings.foldShowsFolders) },
+                        )
                         // R13 controls:
                         SettingsSwitchRow(
                             title = stringResource(R.string.auto_fold_split_title),
@@ -2134,24 +2075,14 @@ private fun ViewSettingsSectionContent(
         }
 
         // Siatka miniatur i etykiety
+        // The picture on the left shows the chosen look: tiles with or without their names.
         SettingsSwitchRow(
             title = stringResource(R.string.show_file_names),
-            modifier = Modifier.settingsSearchTarget(R.string.show_file_names),
             body = stringResource(R.string.show_file_names_body),
             checked = settings.showFileNames,
             onCheckedChange = onShowFileNames,
-            icon = Icons.Rounded.Visibility,
-            preview = {
-                MiniLayoutPreview(
-                    device = previewDevice,
-                    folderColumns = settings.gridColumns,
-                    fileColumns = previewFileColumns,
-                    focus = PreviewFocus.FILES,
-                    showNames = settings.showFileNames,
-                    infoTitle = R.string.show_file_names,
-                    infoBody = R.string.preview_info_show_file_names,
-                )
-            },
+            modifier = Modifier.settingsSearchTarget(R.string.show_file_names),
+            preview = { OptionPreview(OptionPreviewKind.FILE_NAMES, active = settings.showFileNames) },
         )
         SettingsItemDivider()
         Row(
@@ -2194,9 +2125,9 @@ private fun ViewSettingsSectionContent(
                 onValueChange = onGridColumns,
             )
         }
-        SettingsItemDivider()
         // The phone tab only: a tablet uses the file pane's columns.
         if (previewDevice == PreviewDevice.PHONE) {
+            SettingsItemDivider()
             Row(
                 modifier = Modifier.settingsSearchTarget(R.string.file_columns_title)
                     .fillMaxWidth()
@@ -2239,8 +2170,11 @@ private fun ViewSettingsSectionContent(
                     onValueChange = onFileColumns,
                 )
             }
-            SettingsItemDivider()
         }
+        }
+        }
+        // End of the tabs' frame: below are the options shared by both.
+        if (tabbed) Spacer(Modifier.height(12.dp)) else SettingsItemDivider()
         Column(
             modifier = Modifier.settingsSearchTarget(R.string.video_duration_format_title)
                 .fillMaxWidth()
@@ -2653,7 +2587,6 @@ private fun FoldersSettingsSectionContent(
             body = stringResource(R.string.settings_hide_favorites_short),
             checked = settings.hideFavoritesFolder,
             onCheckedChange = onHideFavoritesFolder,
-            onInfoClick = { onShowFolderHelp(FolderHelpTopic.FAVORITES) },
             icon = Icons.Rounded.Star,
             preview = { OptionPreview(OptionPreviewKind.HIDE_FAVORITES, active = settings.hideFavoritesFolder) },
         )
@@ -2700,17 +2633,6 @@ private fun FoldersSettingsSectionContent(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    IconButton(
-                        onClick = { onShowFolderHelp(FolderHelpTopic.MEMORY) },
-                        modifier = Modifier.size(32.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Info,
-                            contentDescription = stringResource(R.string.settings_help_for, stringResource(R.string.multi_folder_memory_title)),
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
                 }
                 SettingsSegmentedRow(
                     options = listOf(
@@ -2732,7 +2654,6 @@ private fun FoldersSettingsSectionContent(
             body = stringResource(R.string.remember_folder_scroll_body),
             checked = settings.rememberFolderScrollAcrossSessions,
             onCheckedChange = onRememberFolderScrollAcrossSessions,
-            onInfoClick = { onShowFolderHelp(FolderHelpTopic.SCROLL) },
             icon = Icons.Rounded.History,
             preview = { OptionPreview(OptionPreviewKind.REMEMBER_SCROLL, active = settings.rememberFolderScrollAcrossSessions) },
         )
@@ -2746,7 +2667,6 @@ private fun FoldersSettingsSectionContent(
             body = stringResource(R.string.new_content_scrolls_to_top_body),
             checked = settings.newContentScrollsToTop,
             onCheckedChange = onNewContentScrollsToTop,
-            onInfoClick = { onShowFolderHelp(FolderHelpTopic.NEW_CONTENT) },
             icon = Icons.Rounded.ArrowUpward,
             preview = { OptionPreview(OptionPreviewKind.NEW_CONTENT_TOP, active = settings.newContentScrollsToTop) },
         )
@@ -2792,16 +2712,16 @@ private fun PrivacySettingsSectionContent(
         SettingsSectionHeader(
             title = stringResource(R.string.settings_category_privacy),
             icon = Icons.Rounded.Security,
-            onInfoClick = onShowPrivacyHelp,
-            infoDescription = stringResource(R.string.settings_help_for, stringResource(SettingsCategory.PRIVACY.titleRes)),
         )
     }
     SettingsCardContainer {
-        // Skarbiec AES-GCM (.enc) info row
+        // Skarbiec AES-GCM (.enc): the private folders, by name only (nothing of their contents).
+        val privateNames = remember(albums) { albums.filter { it.isSecure }.map { it.name }.distinct().sortedBy { it.lowercase() } }
         SettingsActionRow(
             title = stringResource(R.string.secure_folder_settings_title),
             modifier = Modifier.settingsSearchTarget(R.string.secure_folder_settings_title),
-            body = stringResource(R.string.secure_folder_settings_desc),
+            body = if (privateNames.isEmpty()) stringResource(R.string.secure_folders_none)
+            else stringResource(R.string.secure_folders_list, privateNames.joinToString(separator = "\n")),
             icon = Icons.Rounded.Lock,
         )
 
@@ -2814,7 +2734,6 @@ private fun PrivacySettingsSectionContent(
             body = stringResource(if (settings.showHidden && !rememberAllFilesAccess()) R.string.show_hidden_no_access else R.string.show_hidden_body),
             checked = settings.showHidden,
             onCheckedChange = onShowHidden,
-            onInfoClick = { onShowFolderHelp(FolderHelpTopic.HIDDEN) },
             icon = Icons.Rounded.VisibilityOff,
             preview = { OptionPreview(OptionPreviewKind.SHOW_HIDDEN, active = settings.showHidden) },
         )
@@ -2853,7 +2772,6 @@ private fun PrivacySettingsSectionContent(
             },
             icon = Icons.Rounded.Folder,
             onClick = onShowPrivatizedFoldersDialog,
-            onInfoClick = onShowPrivacyHelp,
         )
 
         SettingsItemDivider()
@@ -2867,7 +2785,6 @@ private fun PrivacySettingsSectionContent(
             onCheckedChange = onRandomizeFileNamesInPrivateFolders,
             icon = Icons.Rounded.AutoFixHigh,
             preview = { OptionPreview(OptionPreviewKind.RANDOM_NAMES, active = settings.randomizeFileNamesInPrivateFolders) },
-            onInfoClick = onShowPrivacyHelp,
         )
 
         SettingsItemDivider()
@@ -2881,7 +2798,6 @@ private fun PrivacySettingsSectionContent(
             onCheckedChange = onStripExifInPrivateFolders,
             icon = Icons.Rounded.Security,
             preview = { OptionPreview(OptionPreviewKind.STRIP_EXIF, active = settings.stripExifInPrivateFolders) },
-            onInfoClick = onShowPrivacyHelp,
         )
 
         SettingsItemDivider()
@@ -2895,7 +2811,6 @@ private fun PrivacySettingsSectionContent(
             onCheckedChange = onStripExifOnShare,
             icon = Icons.Rounded.Share,
             preview = { OptionPreview(OptionPreviewKind.STRIP_EXIF_SHARE, active = settings.stripExifOnShare) },
-            onInfoClick = onShowPrivacyHelp,
         )
     }
 }
@@ -2905,17 +2820,16 @@ private fun PlayerSettingsSectionContent(
     settings: AppSettings,
     showHeader: Boolean,
     onVideoDoubleClickToGallery: (Boolean) -> Unit,
+    onVideosOnlyInAlexet: (Boolean) -> Unit,
+    onPlayerLikeExternal: (Boolean) -> Unit,
     onUpdatePlayerConfig: ((dev.ander.alexet.integration.AnderLineConfig) -> dev.ander.alexet.integration.AnderLineConfig) -> Unit,
     onAutoplayGifs: (Boolean) -> Unit,
     onShowNavArrows: (Boolean) -> Unit,
-    onShowBehaviorHelp: () -> Unit,
 ) {
     if (showHeader) {
         SettingsSectionHeader(
             title = stringResource(R.string.settings_category_player),
             icon = Icons.Rounded.PlayCircle,
-            onInfoClick = onShowBehaviorHelp,
-            infoDescription = stringResource(R.string.settings_help_for, stringResource(SettingsCategory.VIEWING.titleRes)),
         )
     }
     SettingsCardContainer {
@@ -2945,18 +2859,44 @@ private fun PlayerSettingsSectionContent(
 
         SettingsItemDivider()
 
-        // Podwójne kliknięcie -> odtwarzacz Alexet
+        // Filmy tylko w Alexecie: a tapped video never goes to another app.
         SettingsSwitchRow(
-            title = stringResource(R.string.video_double_click_gallery),
-            modifier = Modifier.settingsSearchTarget(R.string.video_double_click_gallery),
-            body = stringResource(R.string.video_double_click_gallery_body),
-            checked = settings.videoDoubleClickToGallery,
-            onCheckedChange = onVideoDoubleClickToGallery,
+            title = stringResource(R.string.videos_only_in_alexet),
+            modifier = Modifier.settingsSearchTarget(R.string.videos_only_in_alexet),
+            body = stringResource(R.string.videos_only_in_alexet_body),
+            checked = settings.videosOnlyInAlexet,
+            onCheckedChange = onVideosOnlyInAlexet,
             icon = Icons.Rounded.PlayCircle,
-            preview = { PlayerOptionPreview(PlayerPreviewKind.DOUBLE_CLICK_PLAYER, active = settings.videoDoubleClickToGallery) },
         )
 
         SettingsItemDivider()
+
+        // Odtwarzacz jak zewnetrzny: plays at once, a sideways swipe seeks, settings kept.
+        SettingsSwitchRow(
+            title = stringResource(R.string.player_like_external),
+            modifier = Modifier.settingsSearchTarget(R.string.player_like_external),
+            body = stringResource(R.string.player_like_external_body),
+            checked = settings.playerLikeExternal,
+            onCheckedChange = onPlayerLikeExternal,
+            icon = Icons.Rounded.SmartDisplay,
+        )
+
+        SettingsItemDivider()
+
+        // Podwójne kliknięcie -> odtwarzacz Alexet (nothing to choose while every tap opens it)
+        if (!settings.videosOnlyInAlexet) {
+            SettingsSwitchRow(
+                title = stringResource(R.string.video_double_click_gallery),
+                modifier = Modifier.settingsSearchTarget(R.string.video_double_click_gallery),
+                body = stringResource(R.string.video_double_click_gallery_body),
+                checked = settings.videoDoubleClickToGallery,
+                onCheckedChange = onVideoDoubleClickToGallery,
+                icon = Icons.Rounded.PlayCircle,
+                preview = { PlayerOptionPreview(PlayerPreviewKind.DOUBLE_CLICK_PLAYER, active = settings.videoDoubleClickToGallery) },
+            )
+
+            SettingsItemDivider()
+        }
 
         // Obraz w obrazie (przycisk w odtwarzaczu)
         SettingsSwitchRow(
@@ -3209,10 +3149,8 @@ private fun SelectionSettingsSectionContent(
     settings: AppSettings,
     onFileSelectMode: (FileSelectMode) -> Unit,
     onOperationsFollowSelectionOrder: (Boolean) -> Unit,
-    onSaveSelectionActionsConfig: (List<SelectionAction?>, List<SelectionAction>, Set<SelectionAction>) -> Unit,
+    onSaveSelectionActionsConfig: (List<SelectionAction?>, List<SelectionAction>, Set<SelectionAction>, List<List<SelectionAction>>) -> Unit,
     onToggleSelectionActionVisibility: (SelectionAction) -> Unit,
-    onShowSelectHelp: () -> Unit,
-    onShowActionCardsHelp: () -> Unit,
     onDraggingChanged: (Boolean) -> Unit,
 ) {
     SettingsCardContainer {
@@ -3239,17 +3177,6 @@ private fun SelectionSettingsSectionContent(
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.weight(1f),
                 )
-                IconButton(
-                    onClick = onShowSelectHelp,
-                    modifier = Modifier.size(28.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Info,
-                        contentDescription = stringResource(R.string.file_select_help),
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
             }
             SettingsSegmentedRow(
                 options = listOf(
@@ -3295,23 +3222,13 @@ private fun SelectionSettingsSectionContent(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            IconButton(
-                onClick = onShowActionCardsHelp,
-                modifier = Modifier.size(28.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Info,
-                    contentDescription = stringResource(R.string.action_cards_order),
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
         }
         ActionCardsConfigSection(
             barSlots = settings.barActionSlots,
             menuOrder = settings.menuActionOrder,
-            hiddenActions = settings.hiddenSelectionActions,
-            onSaveConfig = onSaveSelectionActionsConfig,
+            baseHidden = settings.hiddenSelectionActions,
+            extraCards = settings.extraMenuCards,
+            onSaveAll = onSaveSelectionActionsConfig,
             onToggleVisibility = onToggleSelectionActionVisibility,
             onDraggingChanged = onDraggingChanged,
         )
@@ -3356,14 +3273,11 @@ private fun SystemSettingsSectionContent(
     onClearDebugLog: () -> Unit = {},
     onImportConfig: () -> Unit,
     onResetThumbnails: () -> Unit,
-    onShowMaintenanceHelp: () -> Unit = {},
 ) {
     if (showHeader) {
         SettingsSectionHeader(
             title = stringResource(R.string.settings_category_system),
             icon = Icons.Rounded.SaveAlt,
-            onInfoClick = onShowMaintenanceHelp,
-            infoDescription = stringResource(R.string.settings_help_for, stringResource(SettingsCategory.APP.titleRes)),
         )
     }
     SettingsCardContainer {
@@ -3428,12 +3342,31 @@ private fun SystemSettingsSectionContent(
             onClick = onImportConfig,
         )
         SettingsItemDivider()
+        // Asked first: the whole library is read again, which can take minutes.
+        var confirmRescan by remember { mutableStateOf(false) }
+        if (confirmRescan) {
+            AlertDialog(
+                onDismissRequest = { confirmRescan = false },
+                icon = { Icon(Icons.Rounded.RestartAlt, contentDescription = null) },
+                title = { Text(stringResource(R.string.rescan_confirm_title)) },
+                text = { Text(stringResource(R.string.rescan_confirm_body)) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmRescan = false
+                        onResetThumbnails()
+                    }) { Text(stringResource(R.string.rescan_confirm_start)) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmRescan = false }) { Text(stringResource(R.string.cancel)) }
+                },
+            )
+        }
         SettingsActionRow(
             title = stringResource(R.string.rescan),
             modifier = Modifier.settingsSearchTarget(R.string.rescan),
             body = stringResource(R.string.rescan_body),
             icon = Icons.Rounded.RestartAlt,
-            onClick = onResetThumbnails,
+            onClick = { confirmRescan = true },
             isDestructive = true,
         )
         SettingsItemDivider()
@@ -4495,7 +4428,7 @@ private fun DualPaneMiniGraphic(
 }
 
 /** Option of the Folders section whose help is shown. */
-private enum class FolderHelpTopic { MEMORY, SCROLL, NEW_CONTENT, HIDDEN, FAVORITES }
+private enum class FolderHelpTopic { HIDDEN }
 
 @Composable
 private fun HiddenHelpDialog(topic: FolderHelpTopic, onDismiss: () -> Unit) {
@@ -4503,42 +4436,6 @@ private fun HiddenHelpDialog(topic: FolderHelpTopic, onDismiss: () -> Unit) {
         title = stringResource(R.string.settings_category_folders),
         onDismiss = onDismiss,
     ) {
-        if (topic == FolderHelpTopic.MEMORY) HelpFeatureCard(
-            title = stringResource(R.string.multi_folder_memory_title),
-            badge = stringResource(R.string.settings_badge_memory_mode),
-            body = stringResource(R.string.settings_memory_mode_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.Dashboard, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                Text(stringResource(R.string.settings_memory_mode_hint), style = MaterialTheme.typography.labelMedium)
-            }
-        }
-
-        if (topic == FolderHelpTopic.SCROLL) HelpFeatureCard(
-            title = stringResource(R.string.remember_folder_scroll),
-            badge = stringResource(R.string.settings_badge_scrolling),
-            body = stringResource(R.string.remember_folder_scroll_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.History, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                Text(stringResource(R.string.settings_scroll_memory_hint), style = MaterialTheme.typography.labelMedium)
-            }
-        }
-
-        if (topic == FolderHelpTopic.NEW_CONTENT) HelpFeatureCard(
-            title = stringResource(R.string.new_content_scrolls_to_top),
-            badge = stringResource(R.string.settings_badge_scrolling),
-            body = stringResource(R.string.new_content_scrolls_to_top_body),
-        ) {
-            Icon(Icons.Rounded.ArrowUpward, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-        }
-
         if (topic == FolderHelpTopic.HIDDEN) HelpFeatureCard(
             title = stringResource(R.string.show_hidden),
             badge = ".nomedia",
@@ -4597,35 +4494,6 @@ private fun HiddenHelpDialog(topic: FolderHelpTopic, onDismiss: () -> Unit) {
             }
         }
 
-        if (topic == FolderHelpTopic.FAVORITES) HelpFeatureCard(
-            title = stringResource(R.string.hide_favorites_folder),
-            badge = stringResource(R.string.favorites),
-            body = stringResource(R.string.settings_hide_favorites_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Star,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(28.dp),
-                )
-                Icon(
-                    imageVector = Icons.Rounded.Close,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(20.dp),
-                )
-                Icon(
-                    imageVector = Icons.Rounded.GridView,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.outline,
-                    modifier = Modifier.size(28.dp),
-                )
-            }
-        }
     }
 }
 
@@ -4661,396 +4529,6 @@ private fun PaneSplitHelpDialog(onDismiss: () -> Unit) {
                 Icon(Icons.Rounded.PhoneAndroid, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
                 Icon(Icons.Rounded.SwapHoriz, null, tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(20.dp))
                 Text(stringResource(R.string.settings_hinge_split_hint), style = MaterialTheme.typography.labelMedium)
-            }
-        }
-    }
-}
-
-@Composable
-private fun ViewHelpDialog(onDismiss: () -> Unit) {
-    SettingsInfoDialog(
-        title = stringResource(R.string.settings_category_view),
-        onDismiss = onDismiss,
-    ) {
-        HelpFeatureCard(
-            title = stringResource(R.string.show_file_names),
-            badge = stringResource(R.string.settings_badge_labels),
-            body = stringResource(R.string.show_file_names_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(
-                        modifier = Modifier
-                            .size(54.dp, 44.dp)
-                            .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(6.dp)),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(Icons.Rounded.Wallpaper, null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
-                    }
-                    Spacer(Modifier.height(2.dp))
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(2.dp),
-                    ) {
-                        Text("IMG_01.jpg", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp))
-                    }
-                }
-
-                Text("vs", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.outline)
-
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(
-                        modifier = Modifier
-                            .size(54.dp, 54.dp)
-                            .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(6.dp)),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(Icons.Rounded.Wallpaper, null, tint = MaterialTheme.colorScheme.onSecondaryContainer)
-                    }
-                }
-            }
-        }
-
-        HelpFeatureCard(
-            title = stringResource(R.string.grid_columns),
-            badge = stringResource(R.string.settings_badge_columns_1_7),
-            body = stringResource(R.string.grid_columns_body),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(
-                        modifier = Modifier
-                            .size(32.dp, 32.dp)
-                            .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(4.dp)),
-                    )
-                    Text(stringResource(R.string.settings_columns_large), style = MaterialTheme.typography.labelSmall)
-                }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                        repeat(3) {
-                            Box(modifier = Modifier.size(9.dp, 32.dp).background(MaterialTheme.colorScheme.primary, RoundedCornerShape(2.dp)))
-                        }
-                    }
-                    Text(stringResource(R.string.settings_columns_default), style = MaterialTheme.typography.labelSmall)
-                }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
-                        repeat(6) {
-                            Box(modifier = Modifier.size(4.dp, 32.dp).background(MaterialTheme.colorScheme.secondary, RoundedCornerShape(1.dp)))
-                        }
-                    }
-                    Text(stringResource(R.string.settings_columns_compact), style = MaterialTheme.typography.labelSmall)
-                }
-            }
-        }
-
-        HelpFeatureCard(
-            title = stringResource(R.string.video_duration_format_title),
-            badge = stringResource(R.string.settings_badge_duration),
-            body = stringResource(R.string.video_duration_format_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.Schedule, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                Text(stringResource(R.string.settings_duration_hint), style = MaterialTheme.typography.labelMedium)
-            }
-        }
-
-        HelpFeatureCard(
-            title = stringResource(R.string.scroller_enabled_title),
-            badge = "Full Scroller",
-            body = stringResource(R.string.settings_scroller_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.SwapVert, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                Text(stringResource(R.string.settings_scroller_hint), style = MaterialTheme.typography.labelMedium)
-            }
-        }
-
-    }
-}
-
-@Composable
-private fun SelectHelpDialog(onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.action_ok), fontWeight = FontWeight.Bold)
-            }
-        },
-        title = {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Info,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-                Text(stringResource(R.string.file_select_help), style = MaterialTheme.typography.titleLarge)
-            }
-        },
-        text = {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                SelectHelpExample(
-                    title = stringResource(R.string.file_select_help_rect),
-                    body = stringResource(R.string.file_select_help_rect_body),
-                    filled = setOf(3, 4, 5, 6, 7, 8),
-                    start = 3,
-                    modifier = Modifier.weight(1f),
-                )
-                SelectHelpExample(
-                    title = stringResource(R.string.file_select_help_linear),
-                    body = stringResource(R.string.file_select_help_linear_body),
-                    filled = setOf(2, 3, 4, 5, 6, 7, 8),
-                    start = 2,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        },
-    )
-}
-
-@Composable
-private fun BehaviorHelpDialog(onDismiss: () -> Unit) {
-    SettingsInfoDialog(
-        title = stringResource(R.string.settings_category_player),
-        onDismiss = onDismiss,
-    ) {
-        HelpFeatureCard(
-            title = stringResource(R.string.video_double_click_gallery),
-            badge = stringResource(R.string.settings_badge_player),
-            body = stringResource(R.string.video_double_click_gallery_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.PlayCircle, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp))
-                Icon(Icons.Rounded.TouchApp, null, tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(22.dp))
-                Text(stringResource(R.string.settings_double_click_hint), style = MaterialTheme.typography.labelMedium)
-            }
-        }
-
-        HelpFeatureCard(
-            title = stringResource(R.string.autoplay_gifs),
-            badge = "GIF",
-            body = stringResource(R.string.autoplay_gifs_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.Animation, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                Text(stringResource(R.string.settings_gif_hint), style = MaterialTheme.typography.labelMedium)
-            }
-        }
-
-        HelpFeatureCard(
-            title = stringResource(R.string.nav_arrows_title),
-            badge = stringResource(R.string.settings_badge_navigation),
-            body = stringResource(R.string.nav_arrows_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.SwapHoriz, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                Text(stringResource(R.string.settings_nav_buttons_hint), style = MaterialTheme.typography.labelMedium)
-            }
-        }
-    }
-}
-
-@Composable
-private fun ActionCardsHelpDialog(onDismiss: () -> Unit) {
-    SettingsInfoDialog(
-        title = stringResource(R.string.action_cards_order),
-        onDismiss = onDismiss,
-    ) {
-        HelpFeatureCard(
-            title = stringResource(R.string.settings_action_bar_title),
-            badge = stringResource(R.string.settings_badge_bottom_bar),
-            body = stringResource(R.string.settings_action_bar_body),
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
-                    .padding(6.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.Share, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                Icon(Icons.Rounded.Delete, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
-                Icon(Icons.Rounded.Edit, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                Icon(Icons.Rounded.Star, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                Text("+ '...'", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
-            }
-        }
-
-        HelpFeatureCard(
-            title = stringResource(R.string.settings_card_drag_title),
-            badge = stringResource(R.string.settings_badge_configuration),
-            body = stringResource(R.string.settings_card_drag_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.DragIndicator, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                Text(stringResource(R.string.settings_card_drag_hint), style = MaterialTheme.typography.labelMedium)
-            }
-        }
-    }
-}
-
-@Composable
-private fun ConfigHelpDialog(onDismiss: () -> Unit) {
-    MaintenanceHelpDialog(onDismiss = onDismiss)
-}
-
-@Composable
-private fun MaintenanceHelpDialog(onDismiss: () -> Unit) {
-    SettingsInfoDialog(
-        title = stringResource(R.string.settings_category_system),
-        onDismiss = onDismiss,
-    ) {
-        HelpFeatureCard(
-            title = stringResource(R.string.config_export) + " & " + stringResource(R.string.config_import),
-            badge = stringResource(R.string.settings_badge_json_backup),
-            body = stringResource(R.string.settings_json_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Rounded.FileUpload, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                    Text(stringResource(R.string.settings_export_short), style = MaterialTheme.typography.labelSmall)
-                }
-                Icon(Icons.Rounded.Tune, null, tint = MaterialTheme.colorScheme.outline, modifier = Modifier.size(20.dp))
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Rounded.FileDownload, null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(24.dp))
-                    Text("Import", style = MaterialTheme.typography.labelSmall)
-                }
-            }
-        }
-
-        HelpFeatureCard(
-            title = stringResource(R.string.rescan),
-            badge = stringResource(R.string.settings_badge_cache),
-            body = stringResource(R.string.rescan_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.RestartAlt, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                Text(stringResource(R.string.settings_cache_hint), style = MaterialTheme.typography.labelMedium)
-            }
-        }
-
-        HelpFeatureCard(
-            title = stringResource(R.string.wallpaper_resolutions_title),
-            badge = stringResource(R.string.settings_badge_wallpapers),
-            body = stringResource(R.string.settings_wallpaper_res_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.Wallpaper, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                Text(stringResource(R.string.settings_wallpaper_res_hint), style = MaterialTheme.typography.labelMedium)
-            }
-        }
-    }
-}
-
-@Composable
-private fun SelectionHelpDialog(onDismiss: () -> Unit) {
-    SettingsInfoDialog(
-        title = stringResource(R.string.settings_category_selection),
-        onDismiss = onDismiss,
-    ) {
-        HelpFeatureCard(
-            title = stringResource(R.string.settings_select_style_title),
-            badge = stringResource(R.string.settings_badge_selection),
-            body = stringResource(R.string.settings_select_style_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.Check, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                Text(stringResource(R.string.settings_select_style_hint), style = MaterialTheme.typography.labelMedium)
-            }
-        }
-
-        HelpFeatureCard(
-            title = stringResource(R.string.operations_follow_selection_order),
-            badge = stringResource(R.string.settings_badge_order),
-            body = stringResource(R.string.operations_follow_selection_order_body) + " " + stringResource(R.string.operations_follow_selection_order_info),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.AutoMirrored.Rounded.Sort, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                Text(stringResource(R.string.settings_click_order_hint), style = MaterialTheme.typography.labelMedium)
-            }
-        }
-    }
-}
-
-@Composable
-private fun SearchHelpDialog(onDismiss: () -> Unit) {
-    SettingsInfoDialog(
-        title = stringResource(R.string.settings_category_extra),
-        onDismiss = onDismiss,
-    ) {
-        HelpFeatureCard(
-            title = stringResource(R.string.search_files_fullscreen),
-            badge = stringResource(R.string.settings_badge_search),
-            body = stringResource(R.string.search_files_fullscreen_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.GridView, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                Text(stringResource(R.string.settings_search_full_hint), style = MaterialTheme.typography.labelMedium)
-            }
-        }
-
-        HelpFeatureCard(
-            title = stringResource(R.string.smart_search_title),
-            badge = "AI",
-            body = stringResource(R.string.smart_search_body),
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.ImageSearch, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                Text(stringResource(R.string.smart_search_needs_model), style = MaterialTheme.typography.labelMedium)
             }
         }
     }
@@ -5534,15 +5012,34 @@ private fun DropInsertionSlot(modifier: Modifier = Modifier) {
     }
 }
 
+/** Card 1 of the selection menu: its order, then anything neither hidden nor on the bar. */
+private fun firstMenuCardActions(
+    menuOrder: List<SelectionAction>,
+    hidden: Set<SelectionAction>,
+    bar: Set<SelectionAction>,
+): List<SelectionAction> {
+    val inMenu = menuOrder.filter { it !in hidden && it !in bar }.distinct()
+    val missing = SelectionAction.DEFAULT_ORDER.filter { it !in hidden && it !in bar && it !in inMenu }
+    return inMenu + missing
+}
+
 @Composable
 private fun ActionCardsConfigSection(
     barSlots: List<SelectionAction?>,
     menuOrder: List<SelectionAction>,
-    hiddenActions: Set<SelectionAction>,
-    onSaveConfig: (barSlots: List<SelectionAction?>, menuOrder: List<SelectionAction>, hidden: Set<SelectionAction>) -> Unit,
+    baseHidden: Set<SelectionAction>,
+    /** Menu cards 2 and 3 (card 1 is [menuOrder] without [baseHidden]). */
+    extraCards: List<List<SelectionAction>>,
+    onSaveAll: (
+        barSlots: List<SelectionAction?>,
+        menuOrder: List<SelectionAction>,
+        hidden: Set<SelectionAction>,
+        extraCards: List<List<SelectionAction>>,
+    ) -> Unit,
     onToggleVisibility: (SelectionAction) -> Unit,
     onDraggingChanged: (Boolean) -> Unit = {},
 ) {
+    val context = LocalContext.current
     val paddedSlots = remember(barSlots) {
         (barSlots + List(6) { null }).take(6)
     }
@@ -5551,14 +5048,95 @@ private fun ActionCardsConfigSection(
         paddedSlots.filterNotNull().toSet()
     }
 
-    val visibleMenuActions = remember(menuOrder, hiddenActions, activeBarActionsSet) {
-        val inMenu = menuOrder.filter { it !in hiddenActions && it !in activeBarActionsSet }
-        val missing = SelectionAction.DEFAULT_ORDER.filter { it !in hiddenActions && it !in activeBarActionsSet && it !in inMenu }
-        inMenu + missing
+    // Menu card being edited: 0 is the first card, the others come from [extraCards].
+    val cardCount = 1 + extraCards.size
+    var selectedCard by remember { mutableIntStateOf(0) }
+    val card = selectedCard.coerceIn(0, cardCount - 1)
+
+    val firstCardActions = remember(menuOrder, baseHidden, activeBarActionsSet) {
+        firstMenuCardActions(menuOrder, baseHidden, activeBarActionsSet)
+    }
+
+    // The card being edited: its actions, and the ones left out of it (the "hidden" zone).
+    val visibleMenuActions = remember(card, firstCardActions, extraCards, activeBarActionsSet) {
+        if (card == 0) firstCardActions
+        else extraCards[card - 1].filter { it !in activeBarActionsSet }.distinct()
+    }
+    val hiddenActions = remember(card, baseHidden, visibleMenuActions, activeBarActionsSet) {
+        if (card == 0) baseHidden
+        else SelectionAction.DEFAULT_ORDER.filter { it !in activeBarActionsSet && it !in visibleMenuActions }.toSet()
     }
 
     val hiddenList = remember(hiddenActions) {
         SelectionAction.DEFAULT_ORDER.filter { it in hiddenActions }
+    }
+
+    val latestCard = rememberUpdatedState(card)
+    val latestBarSlots = rememberUpdatedState(paddedSlots)
+    val latestFirstCard = rememberUpdatedState(firstCardActions)
+    val latestMenuOrder = rememberUpdatedState(menuOrder)
+    val latestBaseHidden = rememberUpdatedState(baseHidden)
+    val latestExtraCards = rememberUpdatedState(extraCards)
+
+    /**
+     * Saves a change made on the card being edited. Card 1 keeps its own order and hidden set; on
+     * another card only that card changes (card 1 just loses what went onto the bar). A card is never
+     * left without an option.
+     */
+    fun onSaveConfig(slots: List<SelectionAction?>, menu: List<SelectionAction>, hidden: Set<SelectionAction>) {
+        val newBar = slots.filterNotNull().toSet()
+        val editing = latestCard.value
+        val oldFirst = latestFirstCard.value
+        val extras = latestExtraCards.value
+        if (editing == 0) {
+            if (firstMenuCardActions(menu, hidden, newBar).isEmpty() && oldFirst.isNotEmpty()) {
+                Toast.makeText(context, R.string.menu_card_needs_option, Toast.LENGTH_SHORT).show()
+                return
+            }
+            onSaveAll(slots, menu, hidden, extras)
+            return
+        }
+        val oldCard = extras.getOrNull(editing - 1) ?: return
+        val oldBar = latestBarSlots.value.filterNotNull().toSet()
+        val newCard = menu.filter { it !in newBar }.distinct()
+        val newFirst = oldFirst.filter { it !in newBar }
+        val oldCardShown = oldCard.any { it !in oldBar }
+        if ((newCard.isEmpty() && oldCardShown) || (newFirst.isEmpty() && oldFirst.isNotEmpty())) {
+            Toast.makeText(context, R.string.menu_card_needs_option, Toast.LENGTH_SHORT).show()
+            return
+        }
+        // Card 1 stays as it was (less what went onto the bar): whatever is not on it, nor on the
+        // bar, is hidden from it.
+        val (firstOrder, firstHidden) = if (newBar == oldBar) {
+            latestMenuOrder.value to latestBaseHidden.value
+        } else {
+            newFirst to SelectionAction.DEFAULT_ORDER.filter { it !in newBar && it !in newFirst }.toSet()
+        }
+        val newExtras = extras.toMutableList().also { it[editing - 1] = newCard }
+        onSaveAll(slots, firstOrder, firstHidden, newExtras)
+    }
+
+    fun addCard() {
+        val extras = latestExtraCards.value
+        if (1 + extras.size >= AppSettings.MAX_MENU_CARDS) return
+        val bar = latestBarSlots.value.filterNotNull().toSet()
+        val start = SelectionAction.DEFAULT_ORDER.firstOrNull { it !in bar && it !in latestFirstCard.value }
+            ?: SelectionAction.DEFAULT_ORDER.firstOrNull { it !in bar }
+            ?: return
+        onSaveAll(latestBarSlots.value, latestMenuOrder.value, latestBaseHidden.value, extras + listOf(listOf(start)))
+        selectedCard = 1 + extras.size
+    }
+
+    fun removeCard(index: Int) {
+        if (index < 1) return
+        val extras = latestExtraCards.value
+        onSaveAll(
+            latestBarSlots.value,
+            latestMenuOrder.value,
+            latestBaseHidden.value,
+            extras.filterIndexed { i, _ -> i != index - 1 },
+        )
+        selectedCard = index - 1
     }
 
     // The drag handlers run inside pointerInput blocks that may have started on an older
@@ -5842,6 +5420,79 @@ private fun ActionCardsConfigSection(
                 )
             }
 
+            // Menu cards: the open menu is swiped sideways between them; the chosen one is edited below.
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = stringResource(R.string.menu_cards_label),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    letterSpacing = 1.sp,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    for (i in 0 until cardCount) {
+                        val selected = i == card
+                        Surface(
+                            onClick = { selectedCard = i },
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+                            border = BorderStroke(
+                                if (selected) 2.dp else 1.dp,
+                                if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                            ),
+                            modifier = Modifier.size(44.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = "${i + 1}",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
+                        }
+                    }
+                    if (cardCount < AppSettings.MAX_MENU_CARDS) {
+                        Surface(
+                            onClick = { addCard() },
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color.Transparent,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)),
+                            modifier = Modifier.size(44.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Add,
+                                    contentDescription = stringResource(R.string.menu_card_add),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.weight(1f))
+                    if (card > 0) {
+                        IconButton(onClick = { removeCard(card) }) {
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = stringResource(R.string.menu_card_remove, card + 1),
+                                tint = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
+                if (cardCount > 1) {
+                    Text(
+                        text = stringResource(R.string.menu_cards_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
             // --- 2. Interactive Mockup Container ---
             Surface(
                 shape = RoundedCornerShape(22.dp),
@@ -5911,8 +5562,9 @@ private fun ActionCardsConfigSection(
                                     },
                                     shape = RoundedCornerShape(14.dp),
                                 )
-                                .pointerInput(action, slotIndex, paddedSlots, visibleMenuActions, hiddenActions) {
-                                    detectDragGesturesAfterLongPress(
+                                // Moved only while "Change order" is on (no hold needed then).
+                                .pointerInput(action, slotIndex, paddedSlots, visibleMenuActions, hiddenActions, isReorderingMode) {
+                                    if (isReorderingMode) detectDragGestures(
                                         onDragStart = { localOffset ->
                                             onDraggingChanged(true)
                                             if (action != null) {
@@ -6255,8 +5907,10 @@ private fun ActionCardsConfigSection(
                                             .padding(horizontal = 8.dp)
                                             .alpha(if (isDraggingThis) 0.25f else 1f),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     ) {
+                                        // What the action does (a short animation and a few words).
+                                        ActionInfoButton(action, stringResource(actionTitleRes(action)), actionIcon(action))
                                         IconButton(
                                             onClick = {
                                                 val newHidden = hiddenActions + action
@@ -6298,33 +5952,6 @@ private fun ActionCardsConfigSection(
                                                 .pointerInput(action, menuIdx, isReorderingMode) {
                                                     if (isReorderingMode) {
                                                         detectDragGestures(
-                                                            onDragStart = { localOffset ->
-                                                                onDraggingChanged(true)
-                                                                draggingAction = action
-                                                                isDraggingEmptySlot = false
-                                                                dragSource = DragSource.FromMenu(menuIdx)
-                                                                val bounds = targetBounds[targetCode]
-                                                                dragGlobalPos = if (bounds != null) bounds.topLeft + localOffset else Offset.Zero
-                                                                hoveredTargetSlot = 100 + menuIdx
-                                                                hoveredMenuInsertionIndex = null
-                                                            },
-                                                            onDrag = { change, dragAmount ->
-                                                                change.consume()
-                                                                dragGlobalPos += dragAmount
-                                                                hoveredTargetSlot = findHoveredTarget(dragGlobalPos)
-                                                            },
-                                                            onDragEnd = { handleDragEnd() },
-                                                            onDragCancel = {
-                                                                onDraggingChanged(false)
-                                                                draggingAction = null
-                                                                isDraggingEmptySlot = false
-                                                                dragSource = null
-                                                                hoveredTargetSlot = null
-                                                                hoveredMenuInsertionIndex = null
-                                                            },
-                                                        )
-                                                    } else {
-                                                        detectDragGesturesAfterLongPress(
                                                             onDragStart = { localOffset ->
                                                                 onDraggingChanged(true)
                                                                 draggingAction = action
@@ -6477,8 +6104,10 @@ private fun ActionCardsConfigSection(
                                             .padding(horizontal = 8.dp)
                                             .alpha(if (isDraggingThis) 0.25f else 1f),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     ) {
+                                        // What the action does (a short animation and a few words).
+                                        ActionInfoButton(action, stringResource(actionTitleRes(action)), actionIcon(action))
                                         IconButton(
                                             onClick = {
                                                 val newHidden = hiddenActions - action
@@ -6537,31 +6166,6 @@ private fun ActionCardsConfigSection(
                                                                 hoveredMenuInsertionIndex = null
                                                             },
                                                         )
-                                                    } else {
-                                                        detectDragGesturesAfterLongPress(
-                                                            onDragStart = { localOffset ->
-                                                                onDraggingChanged(true)
-                                                                draggingAction = action
-                                                                isDraggingEmptySlot = false
-                                                                dragSource = DragSource.FromHidden
-                                                                val bounds = targetBounds[hiddenItemKey] ?: targetBounds[HIDDEN_DROP_ZONE]
-                                                                dragGlobalPos = if (bounds != null) bounds.topLeft + localOffset else Offset.Zero
-                                                            },
-                                                            onDrag = { change, dragAmount ->
-                                                                change.consume()
-                                                                dragGlobalPos += dragAmount
-                                                                hoveredTargetSlot = findHoveredTarget(dragGlobalPos)
-                                                            },
-                                                            onDragEnd = { handleDragEnd() },
-                                                            onDragCancel = {
-                                                                onDraggingChanged(false)
-                                                                draggingAction = null
-                                                                isDraggingEmptySlot = false
-                                                                dragSource = null
-                                                                hoveredTargetSlot = null
-                                                                hoveredMenuInsertionIndex = null
-                                                            },
-                                                        )
                                                     }
                                                 },
                                             contentAlignment = Alignment.Center,
@@ -6588,11 +6192,14 @@ private fun ActionCardsConfigSection(
             ) {
                 TextButton(
                     onClick = {
-                        onSaveConfig(
+                        // Cards 2 and 3 go too.
+                        onSaveAll(
                             AppSettings.DEFAULT_BAR_SLOTS,
                             AppSettings.DEFAULT_MENU_ORDER,
                             emptySet(),
+                            emptyList(),
                         )
+                        selectedCard = 0
                     },
                 ) {
                     Icon(Icons.Rounded.RestartAlt, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -6819,7 +6426,8 @@ private fun ScrollerPreviewTile(
 ) {
     // Read only where the pill is placed (layout), not here: reading it in composition
     // recomposed both tiles on every frame of the animation.
-    val progressState: androidx.compose.runtime.State<Float>? = if (LocalLightMode.current) {
+    val onScreen = rememberPreviewOnScreen()
+    val progressState: androidx.compose.runtime.State<Float>? = if (LocalLightMode.current || !onScreen.value) {
         null
     } else {
         val infiniteTransition = rememberInfiniteTransition(label = "scrollerPreview")
@@ -6844,7 +6452,8 @@ private fun ScrollerPreviewTile(
         modifier = modifier
             .aspectRatio(1.2f)
             .clip(RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick),
+            .clickable(onClick = onClick)
+            .then(onScreen.modifier),
     ) {
         Column(
             modifier = Modifier

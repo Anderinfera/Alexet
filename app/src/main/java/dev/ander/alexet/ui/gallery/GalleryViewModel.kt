@@ -73,6 +73,7 @@ import java.io.File
 import dev.ander.alexet.data.DuplicateFinder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.delay
@@ -139,6 +140,8 @@ data class GalleryUiState(
     val hoveredAlbumId: Long = AlbumIds.NONE,
     val hoveredSlot: Int = -1,
     val viewerMediaId: Long? = null,
+    /** The viewer was opened as a video player: only the list's videos are paged. */
+    val viewerAsPlayer: Boolean = false,
     val externalMedia: GalleryMedia? = null,
     val isLoading: Boolean = true,
     val externalPlayerAvailable: Boolean = false,
@@ -181,6 +184,10 @@ data class GalleryUiState(
         albumId in loadingFolderIds && folderMedia[albumId].isNullOrEmpty()
 
     val inTrash: Boolean by lazy { computeInTrash() }
+    /** Ids of [trashedItems]: a set instead of a scan of the trash per selected file. */
+    private val trashIds: Set<Long> by lazy {
+        UiStateMemo.get("trashIds", trashedItems) { trashedItems.mapTo(HashSet<Long>()) { it.id } }
+    }
     private fun computeInTrash(): Boolean = phoneFolderId == AlbumIds.TRASH ||
             AlbumIds.TRASH in openFolderIds ||
             contentFolderId == AlbumIds.TRASH ||
@@ -188,17 +195,19 @@ data class GalleryUiState(
                 it.bucketId == AlbumIds.TRASH ||
                 it.absolutePath?.let { dev.ander.alexet.data.hasTrashMarker(it) } == true ||
                 it.bucketName.equals(".alexet_trash", ignoreCase = true) ||
-                trashedItems.any { t -> t.id == it.id }
+                it.id in trashIds
             }) ||
             (viewerMediaId != null && (
-                trashedItems.any { it.id == viewerMediaId } ||
+                viewerMediaId in trashIds ||
                 viewerMedia?.bucketId == AlbumIds.TRASH ||
                 viewerMedia?.absolutePath?.let { dev.ander.alexet.data.hasTrashMarker(it) } == true ||
                 viewerMedia?.bucketName?.equals(".alexet_trash", ignoreCase = true) == true
             ))
 
     val trashAlbum: Album by lazy { computeTrashAlbum() }
-    private fun computeTrashAlbum(): Album = Album(
+    // The same Album object while its inputs stay: the folder tile is not redrawn on every copy.
+    private fun computeTrashAlbum(): Album = UiStateMemo.get("trashAlbum", trashedItems, trashName) {
+        Album(
             id = AlbumIds.TRASH,
             name = trashName,
             cover = trashedItems.firstOrNull()?.toGalleryMedia(),
@@ -206,24 +215,31 @@ data class GalleryUiState(
             relativePath = "",
             isHidden = true,
         )
+    }
 
     val favoriteFiles: List<GalleryMedia> by lazy { computeFavoriteFiles() }
     private fun computeFavoriteFiles(): List<GalleryMedia> {
-            val byId = media.associateBy { it.id }
-            return settings.favoriteMediaIds.mapNotNull { byId[it] }
+            if (settings.favoriteMediaIds.isEmpty()) return emptyList()
+            // Read on every state (the favorites tile): mapped again only when the library or the favorites change.
+            return UiStateMemo.get("favoriteFiles", media, settings.favoriteMediaIds) {
+                val byId = media.associateBy { it.id }
+                settings.favoriteMediaIds.mapNotNull { byId[it] }
+            }
         }
 
     val favoritesAlbum: Album by lazy { computeFavoritesAlbum() }
     private fun computeFavoritesAlbum(): Album {
             val favs = favoriteFiles
-            return Album(
-                id = AlbumIds.FAVORITES,
-                name = favoritesName,
-                cover = favs.firstOrNull(),
-                itemCount = favs.size,
-                relativePath = "",
-                isHidden = settings.hideFavoritesFolder,
-            )
+            return UiStateMemo.get("favoritesAlbum", favs, favoritesName, settings.hideFavoritesFolder) {
+                Album(
+                    id = AlbumIds.FAVORITES,
+                    name = favoritesName,
+                    cover = favs.firstOrNull(),
+                    itemCount = favs.size,
+                    relativePath = "",
+                    isHidden = settings.hideFavoritesFolder,
+                )
+            }
         }
 
     val inFavorites: Boolean get() = phoneFolderId == AlbumIds.FAVORITES
@@ -246,7 +262,7 @@ data class GalleryUiState(
         }
 
     val viewerMedia: GalleryMedia? by lazy { computeViewerMedia() }
-    private fun computeViewerMedia(): GalleryMedia? = externalMedia?.takeIf { it.id == viewerMediaId }
+    private fun computeViewerMedia(): GalleryMedia? = if (viewerMediaId == null) null else externalMedia?.takeIf { it.id == viewerMediaId }
             ?: trashedItems.firstOrNull { it.id == viewerMediaId }?.toGalleryMedia()
             ?: media.firstOrNull { it.id == viewerMediaId }
             ?: folderMedia.values.firstNotNullOfOrNull { list -> list.firstOrNull { it.id == viewerMediaId } }
@@ -313,6 +329,15 @@ data class GalleryUiState(
             // copy the whole library.
             if (selectedFileIds.isEmpty() && selectedFileIdsOrdered.isEmpty()) return emptyList()
             val allAvailable = allCandidateMedia
+            // Every input read below: a copy for an unrelated field reuses the list.
+            return UiStateMemo.get(
+                "selectedFiles", selectedFileIds, selectedFileIdsOrdered, allAvailable, trashedItems, media,
+                folderMedia[phoneFolderId], phoneFolderId, settings.operationsFollowSelectionOrder,
+                settings.sort, settings.folderSorts,
+            ) { computeSelectedFilesFrom(allAvailable) }
+        }
+
+    private fun computeSelectedFilesFrom(allAvailable: List<GalleryMedia>): List<GalleryMedia> {
             if (settings.operationsFollowSelectionOrder && selectedFileIdsOrdered.isNotEmpty()) {
                 val byId = HashMap<Long, GalleryMedia>(allAvailable.size + trashedItems.size)
                 allAvailable.forEach { byId[it.id] = it }
@@ -509,17 +534,18 @@ data class GalleryUiState(
                 val contentOrder = settings.folderContentOrders[albumId]
                     ?: album?.legacyBucketIds?.firstNotNullOfOrNull { settings.folderContentOrders[it] }
                 if (!contentOrder.isNullOrEmpty()) {
-                    val rank = contentOrder.withIndex().associate { it.value to it.index }
-                    baseItems.sortedWith(
-                        compareBy<GalleryMedia> { rank[it.id] ?: Int.MAX_VALUE }
-                            .thenBy(AlphanumericComparator) { it.displayName }
-                    )
+                    FolderSortCache.get(albumId, baseItems, contentOrder, null, randomSeed) {
+                        val rank = contentOrder.withIndex().associate { it.value to it.index }
+                        baseItems.sortedWith(
+                            compareBy<GalleryMedia> { rank[it.id] ?: Int.MAX_VALUE }
+                                .thenBy(AlphanumericComparator) { it.displayName }
+                        )
+                    }
                 } else {
-                    sortMedia(
-                        baseItems,
-                        settings.sortFor(albumId, album?.legacyBucketIds ?: emptySet()),
-                        randomSeed,
-                    )
+                    val spec = settings.sortFor(albumId, album?.legacyBucketIds ?: emptySet())
+                    FolderSortCache.get(albumId, baseItems, null, spec, randomSeed) {
+                        sortMedia(baseItems, spec, randomSeed)
+                    }
                 }
             }
         }
@@ -553,7 +579,13 @@ data class GalleryUiState(
 
     private fun computeCurrentViewerList(): List<GalleryMedia> {
         val viewer = viewerMedia ?: return emptyList()
-        val list = viewerCandidates(viewer)
+        val candidates = viewerCandidates(viewer)
+        // Player mode: only the videos of the list, the opened one always among them.
+        val list = if (viewerAsPlayer && viewer.isVideo) {
+            candidates.filter { it.isVideo }.takeIf { videos -> videos.any { it.id == viewer.id } } ?: listOf(viewer)
+        } else {
+            candidates
+        }
         // Other files (documents…) open outside: the viewer pages over photos, videos and audio.
         return if (list.any { it.isOtherFile && !it.isAudio }) {
             list.filter { !it.isOtherFile || it.isAudio }.ifEmpty { listOf(viewer) }
@@ -565,7 +597,8 @@ data class GalleryUiState(
     private fun viewerCandidates(viewer: GalleryMedia): List<GalleryMedia> {
         return when {
             inTrash -> {
-                val trash = trashedItems.map { it.toGalleryMedia() }
+                // The trash folder's list (the same mapping, kept across copies).
+                val trash = filesIn(AlbumIds.TRASH)
                 if (query.isNotBlank()) trash.filter { it.displayName.contains(query, ignoreCase = true) }.ifEmpty { listOf(viewer) }
                 else trash.ifEmpty { listOf(viewer) }
             }
@@ -617,6 +650,7 @@ private data class Interaction(
     val hoveredAlbumId: Long = AlbumIds.NONE,
     val hoveredSlot: Int = -1,
     val viewerMediaId: Long? = null,
+    val viewerAsPlayer: Boolean = false,
     val externalMedia: GalleryMedia? = null,
     val loading: Boolean = true,
     val pendingUri: Uri? = null,
@@ -629,10 +663,10 @@ private data class Interaction(
 
 private data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
-/** Folders of [albums] that a download in [downloads] writes into. */
-private fun downloadingAlbumIdsOf(downloads: Map<String, ActiveDownload>, albums: List<Album>): Set<Long> {
-    if (downloads.isEmpty()) return emptySet()
-    return albums.filter { album -> downloads.keys.any(album::holdsDownload) }.map { it.id }.toSet()
+/** Folders of [albums] that a download to one of [downloadPaths] writes into. */
+private fun downloadingAlbumIdsOf(downloadPaths: Set<String>, albums: List<Album>): Set<Long> {
+    if (downloadPaths.isEmpty()) return emptySet()
+    return albums.filter { album -> downloadPaths.any(album::holdsDownload) }.map { it.id }.toSet()
 }
 
 private data class SyncState(
@@ -672,6 +706,7 @@ class GalleryViewModel(
         Interaction(
             phoneFolderId = savedStateHandle[KEY_PHONE_FOLDER_ID] ?: AlbumIds.NONE,
             viewerMediaId = savedStateHandle[KEY_VIEWER_MEDIA_ID],
+            viewerAsPlayer = savedStateHandle[KEY_VIEWER_AS_PLAYER] ?: false,
         ),
     )
     /**
@@ -1057,6 +1092,23 @@ class GalleryViewModel(
     @Volatile private var lastMediaData: MediaData? = null
     @Volatile private var lastUnlockedPaths: Any? = null
     @Volatile private var lastComputedFolders = 0
+    /** The last folders were the seed's (it held more than the library): a newer seed builds them again. */
+    @Volatile private var lastUsedSeed = false
+
+    /**
+     * The folders built from a library with their covers, and what they were built from: a
+     * favorite toggled or a trash change keeps them (only the media and the sort make them).
+     */
+    private class LibraryFolders(
+        val media: List<GalleryMedia>,
+        val sort: SortSpec,
+        val folderSorts: Map<Long, SortSpec>,
+        /** Made of the library alone (not of the seed folders). */
+        val ownFolders: Boolean,
+        val albums: List<Album>,
+        val computedCount: Int,
+    )
+    @Volatile private var lastLibraryFolders: LibraryFolders? = null
 
     private val albumDataFlow = combine(
         combine(mediaItems, store.settings.map { AlbumSettings(it) }.distinctUntilChanged(), trashManager.items) { media, albumSettings, trashed ->
@@ -1071,26 +1123,48 @@ class GalleryViewModel(
         // Each sync built every folder twice (12-68 ms each).
         lastMediaData?.let { last ->
             if (last.media === media && last.settings === settings && last.trashed === trashed &&
-                lastUnlockedPaths === unlockedPaths && seedAlbums.size <= lastComputedFolders
+                lastUnlockedPaths === unlockedPaths && seedAlbums.size <= lastComputedFolders &&
+                // Built from the old, longer seed: a deleted folder stayed on the list until the
+                // library changed again (the sync publishes the library before its new seed).
+                !lastUsedSeed
             ) {
                 return@combine last
             }
         }
         val buildStartedAt = SystemClock.elapsedRealtime()
-        val grouped = media.groupBy { it.bucketId }
-        val computed = repository.albumsFrom(media).map { album ->
-            val albumFiles = grouped[album.id].orEmpty()
-            val cover = findCoverMedia(albumFiles, settings.sortFor(album.id, album.legacyBucketIds)) ?: album.cover
-            album.copy(cover = cover)
+        // Same library and sort: the folders and covers would come out the same (with these
+        // seed folders they are made of the library alone, as before).
+        val kept = lastLibraryFolders?.takeIf { prev ->
+            prev.ownFolders && prev.media === media && seedAlbums.size <= prev.computedCount &&
+                prev.sort == settings.sort && prev.folderSorts == settings.folderSorts
         }
-        val rawRepoAlbums = if (computed.isNotEmpty()) {
-            if (seedAlbums.isNotEmpty() && seedAlbums.size > computed.size) {
-                val computedMap = computed.associateBy { it.id }
-                seedAlbums.map { seed -> computedMap[seed.id] ?: seed }
-            } else {
-                computed
+        val rawRepoAlbums: List<Album>
+        val computedCount: Int
+        val usedSeed: Boolean
+        if (kept != null) {
+            rawRepoAlbums = kept.albums
+            computedCount = kept.computedCount
+            usedSeed = false
+        } else {
+            val grouped = media.groupBy { it.bucketId }
+            val computed = repository.albumsFrom(media).map { album ->
+                val albumFiles = grouped[album.id].orEmpty()
+                val cover = findCoverMedia(albumFiles, settings.sortFor(album.id, album.legacyBucketIds)) ?: album.cover
+                album.copy(cover = cover)
             }
-        } else seedAlbums
+            val ownFolders = computed.isNotEmpty() && !(seedAlbums.isNotEmpty() && seedAlbums.size > computed.size)
+            rawRepoAlbums = if (computed.isNotEmpty()) {
+                if (seedAlbums.isNotEmpty() && seedAlbums.size > computed.size) {
+                    val computedMap = computed.associateBy { it.id }
+                    seedAlbums.map { seed -> computedMap[seed.id] ?: seed }
+                } else {
+                    computed
+                }
+            } else seedAlbums
+            computedCount = computed.size
+            usedSeed = !ownFolders
+            lastLibraryFolders = LibraryFolders(media, settings.sort, settings.folderSorts, ownFolders, rawRepoAlbums, computedCount)
+        }
 
         val unlockedAlbums = unlockedPaths.mapNotNull { path ->
             val dir = File(path)
@@ -1127,19 +1201,29 @@ class GalleryViewModel(
         }
         val filteredRepo = if (secureAlbumPaths.isEmpty()) rawRepoAlbums else rawRepoAlbums.filterNot { it.relativePath in secureAlbumPaths }
 
-        val repoAlbums = (filteredRepo + unlockedAlbums).distinctBy { it.id }
+        // The previous list while the folders are equal: the lists made of it are kept too.
+        val repoAlbums = (filteredRepo + unlockedAlbums).distinctBy { it.id }.let { fresh ->
+            lastMediaData?.repoAlbums?.takeIf { it == fresh } ?: fresh
+        }
 
-        val byIdMedia = media.associateBy { it.id }
-        val favFiles = settings.favoriteMediaIds.mapNotNull { byIdMedia[it] }
+        val favFiles: List<GalleryMedia> = if (settings.favoriteMediaIds.isEmpty()) emptyList() else {
+            UiStateMemo.get("albumDataFavFiles", media, settings.favoriteMediaIds) {
+                val byIdMedia = media.associateBy { it.id }
+                settings.favoriteMediaIds.mapNotNull { byIdMedia[it] }
+            }
+        }
+        val favoritesName = getApplication<Application>().getString(R.string.favorites)
         val favAlbum = if (favFiles.isNotEmpty()) {
-            Album(
-                id = AlbumIds.FAVORITES,
-                name = getApplication<Application>().getString(R.string.favorites),
-                cover = favFiles.firstOrNull(),
-                itemCount = favFiles.size,
-                relativePath = "",
-                isHidden = settings.hideFavoritesFolder,
-            )
+            UiStateMemo.get("albumDataFavAlbum", favFiles, favoritesName, settings.hideFavoritesFolder) {
+                Album(
+                    id = AlbumIds.FAVORITES,
+                    name = favoritesName,
+                    cover = favFiles.firstOrNull(),
+                    itemCount = favFiles.size,
+                    relativePath = "",
+                    isHidden = settings.hideFavoritesFolder,
+                )
+            }
         } else null
 
         MediaData(
@@ -1152,7 +1236,8 @@ class GalleryViewModel(
         ).also {
             lastMediaData = it
             lastUnlockedPaths = unlockedPaths
-            lastComputedFolders = computed.size
+            lastComputedFolders = computedCount
+            lastUsedSeed = usedSeed
             AppLog.event("Library") {
                 "folders built: ${media.size} file(s), ${repoAlbums.size} folder(s) in ${SystemClock.elapsedRealtime() - buildStartedAt} ms"
             }
@@ -1198,14 +1283,25 @@ class GalleryViewModel(
         val (allAlbums, albums) = UiStateMemo.get(
             "processedAlbums",
             data.repoAlbums, data.favAlbum, otherFolders, settings.showOtherFileFolders, shouldIncludeFav,
-            settings.albumOrder, reveal, settings.hiddenAlbumIds,
+            settings.albumOrder, reveal, settings.hiddenAlbumIds, settings.showAllFiles, settings.allFilesFolderIds,
         ) {
+            // A folder that shows its other files counts them too: "20 (+5)".
+            val photoAlbums = if (otherFolders.isEmpty()) {
+                data.repoAlbums
+            } else {
+                val otherCounts = otherFolders.associate { it.id to it.itemCount }
+                data.repoAlbums.map { album ->
+                    val count = otherCounts[album.id] ?: 0
+                    val shows = settings.showOtherFileFolders || settings.showsAllFiles(album.id)
+                    if (count > 0 && shows) album.copy(otherCount = count) else album
+                }
+            }
             // "Show folders with other files": folders without photos get a tile too.
             val repoAlbums = if (settings.showOtherFileFolders && otherFolders.isNotEmpty()) {
                 val known = data.repoAlbums.mapTo(HashSet()) { it.id }
-                data.repoAlbums + otherFolders.filter { it.id !in known }
+                photoAlbums + otherFolders.filter { it.id !in known }
             } else {
-                data.repoAlbums
+                photoAlbums
             }
             val baseAlbums = (if (shouldIncludeFav && data.favAlbum != null) {
                 listOf(data.favAlbum) + repoAlbums
@@ -1245,8 +1341,12 @@ class GalleryViewModel(
         .shareIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), replay = 1)
 
     /** Folders with a download in progress: a change when one starts or ends, not every download tick. */
-    private val downloadingAlbumIds = combine(repository.activeDownloads, processedMediaFlow.map { it.albums }.distinctUntilChanged { a, b -> a === b }) { downloads, albums ->
-        downloadingAlbumIdsOf(downloads, albums)
+    private val downloadingAlbumIds = combine(
+        // Only which files are downloading: a progress tick changes nothing here.
+        repository.activeDownloads.map { it.keys }.distinctUntilChanged(),
+        processedMediaFlow.map { it.albums }.distinctUntilChanged { a, b -> a === b },
+    ) { downloadPaths, albums ->
+        downloadingAlbumIdsOf(downloadPaths, albums)
     }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     private val syncState = combine(
@@ -1296,6 +1396,49 @@ class GalleryViewModel(
         val others = otherStateBuilds.getAndSet(0)
         AppLog.event("Library") {
             "screen state built in ${SystemClock.elapsedRealtime() - startedAt} ms ($others other build(s) since the last change)"
+        }
+    }
+
+    /** The screen last reported two panes (null: not reported yet); the right pane is prewarmed only then. */
+    @Volatile private var screenWide: Boolean? = null
+
+    /**
+     * Builds, still on the background thread, the lists the screen reads from [state] at once: they
+     * were first built on the main thread while drawing (a folder's rows and sort, the search).
+     * Only what is shown: anything else stays lazy.
+     */
+    private fun prewarmScreenState(state: GalleryUiState) {
+        try {
+            val phoneId = state.phoneFolderId
+            if (phoneId != AlbumIds.NONE && !(state.contentOrderMode && state.contentOrderFolderId == phoneId)) {
+                state.visibleFilesIn(phoneId)
+            }
+            if (screenWide == true) {
+                // The right pane shows only folders it knows (the folder list, trash, favorites).
+                fun shown(id: Long) = id == AlbumIds.TRASH || id == AlbumIds.FAVORITES || state.allAlbums.any { it.id == id }
+                fun warm(id: Long) {
+                    if (id == AlbumIds.NONE || (state.contentOrderMode && state.contentOrderFolderId == id) || !shown(id)) return
+                    state.visibleFilesIn(id)
+                }
+                when (state.settings.contentViewMode) {
+                    ContentViewMode.LAST_FOLDER, ContentViewMode.CURRENT_SESSION -> warm(state.contentFolderId)
+                    ContentViewMode.MULTI_FOLDER, ContentViewMode.CLICK_DRAG -> state.openFolderIds.forEach { warm(it) }
+                    else -> Unit
+                }
+            }
+            if (state.query.isNotBlank() && state.searchMode.searchesFiles) state.searchFiles
+            if (state.selectedFileIds.isNotEmpty()) {
+                state.selectedFiles
+                state.inTrash
+            }
+            if (state.viewerMediaId != null) {
+                state.viewerMedia
+                state.currentViewerList()
+            }
+            state.favoritesAlbum
+            state.trashAlbum
+        } catch (e: Exception) {
+            // Nothing is kept from a failed build: the screen's own read meets it as before.
         }
     }
 
@@ -1359,9 +1502,12 @@ class GalleryViewModel(
             pendingHitboxAlbumId = ix.pendingHitboxAlbumId,
             highlightedFolderId = ix.highlightedFolderId,
             selectedFileIds = ix.selectedFileIds,
-            selectedFileIdsOrdered = ix.selectedFileIdsOrdered.filter { it in ix.selectedFileIds }.ifEmpty {
-                // Backward-compatible: LinkedHashSet iteration order from taps.
-                ix.selectedFileIds.toList()
+            // The same list while the selection stays: selectedFiles is then reused too.
+            selectedFileIdsOrdered = UiStateMemo.get("selectedFileIdsOrdered", ix.selectedFileIdsOrdered, ix.selectedFileIds) {
+                ix.selectedFileIdsOrdered.filter { it in ix.selectedFileIds }.ifEmpty {
+                    // Backward-compatible: LinkedHashSet iteration order from taps.
+                    ix.selectedFileIds.toList()
+                }
             },
             selectedAlbumIds = ix.selectedAlbumIds,
             stampedAlbumIds = ix.stampedAlbumIds,
@@ -1414,14 +1560,18 @@ class GalleryViewModel(
                         null
                     }
                 }
-            } ?: (visible.firstOrNull { it.uri == ix.pendingUri }
-                ?: folderMedia.values.firstNotNullOfOrNull { list -> list.firstOrNull { it.uri == ix.pendingUri } })
-                ?.id?.also { pendingId ->
-                    (visible.firstOrNull { it.id == pendingId }
-                        ?: folderMedia.values.firstNotNullOfOrNull { list -> list.firstOrNull { it.id == pendingId } })
-                        ?.let { cacheViewerMedia(it) }
-                }),
+            } ?: ix.pendingUri?.let { pendingUri ->
+                // No uri waiting (almost always): no file can match, the lists are not scanned.
+                (visible.firstOrNull { it.uri == pendingUri }
+                    ?: folderMedia.values.firstNotNullOfOrNull { list -> list.firstOrNull { it.uri == pendingUri } })
+                    ?.id?.also { pendingId ->
+                        (visible.firstOrNull { it.id == pendingId }
+                            ?: folderMedia.values.firstNotNullOfOrNull { list -> list.firstOrNull { it.id == pendingId } })
+                            ?.let { cacheViewerMedia(it) }
+                    }
+            }),
             cachedViewerMedia = lastActiveViewerMedia,
+            viewerAsPlayer = ix.viewerAsPlayer,
             externalMedia = ix.externalMedia,
             isLoading = (sync.isScanning || ix.loading) && (visible.isEmpty() || albums.isEmpty()),
             externalPlayerAvailable = ExternalPlayer.isAvailable(getApplication()),
@@ -1443,7 +1593,10 @@ class GalleryViewModel(
             deletingFolders = sync.deletingFolders,
             trashName = getApplication<Application>().getString(R.string.trash),
             favoritesName = getApplication<Application>().getString(R.string.favorites),
-        ).also { logScreenStateBuild(processed, storeFolderMedia, buildStartedAt) }
+        ).also {
+            prewarmScreenState(it)
+            logScreenStateBuild(processed, storeFolderMedia, buildStartedAt)
+        }
     }.flowOn(Dispatchers.Default)
     .stateIn(
         viewModelScope,
@@ -1463,10 +1616,12 @@ class GalleryViewModel(
             var listed = emptySet<Long>()
             combine(
                 interaction.map { ix -> setOf(ix.phoneFolderId, ix.sessionFolderId) + ix.openFolderIds }.distinctUntilChanged(),
-                store.settings.map { Triple(it.showAllFiles, it.allFilesFolderIds, it.lastOpenedFolderId) }.distinctUntilChanged(),
+                store.settings.map { OtherFilesSettings(it.showAllFiles, it.allFilesFolderIds, it.lastOpenedFolderId, it.showOtherFileFolders) }
+                    .distinctUntilChanged(),
                 repository.otherFolders,
-            ) { shown, (all, ids, last), otherFolders ->
-                val otherOnly = otherFolders.mapTo(HashSet()) { it.id }
+            ) { shown, (all, ids, last, otherFolderTiles), otherFolders ->
+                // The list is also read for the counts ("20 (+5)"): only its own switch shows those folders' files.
+                val otherOnly = if (otherFolderTiles) otherFolders.mapTo(HashSet()) { it.id } else emptySet()
                 val eligible = { id: Long ->
                     id != AlbumIds.NONE && id != AlbumIds.TRASH && id != AlbumIds.FAVORITES &&
                         (all || id in ids || id in otherOnly)
@@ -1484,7 +1639,9 @@ class GalleryViewModel(
         // "Show folders with other files": the folder list is read when switched on and after
         // library changes (a few seconds later; it reads MediaStore's whole file table).
         viewModelScope.launch {
-            store.settings.map { it.showOtherFileFolders }.distinctUntilChanged().collectLatest { on ->
+            // Also for the counts of other files on the tiles of folders that show them ("20 (+5)").
+            store.settings.map { it.showOtherFileFolders || it.showAllFiles || it.allFilesFolderIds.isNotEmpty() }
+                .distinctUntilChanged().collectLatest { on ->
                 if (!on) return@collectLatest
                 // Read now, then after changes of other files only: a new photo cannot change which
                 // folders hold other files, and each read went through MediaStore's whole file table.
@@ -1562,8 +1719,10 @@ class GalleryViewModel(
                 savedStateHandle[KEY_PHONE_FOLDER_ID] = ix.phoneFolderId
                 if (ix.viewerMediaId != null) {
                     savedStateHandle[KEY_VIEWER_MEDIA_ID] = ix.viewerMediaId
+                    savedStateHandle[KEY_VIEWER_AS_PLAYER] = ix.viewerAsPlayer
                 } else {
                     savedStateHandle.remove<Long>(KEY_VIEWER_MEDIA_ID)
+                    savedStateHandle.remove<Boolean>(KEY_VIEWER_AS_PLAYER)
                 }
             }
         }
@@ -1665,17 +1824,18 @@ class GalleryViewModel(
             }
         }
         viewModelScope.launch {
-            store.settings.collect { settings ->
-                interaction.update { ix ->
-                    if (ix.multiHydrated) {
-                        ix
-                    } else if (settings.contentViewMode == ContentViewMode.MULTI_FOLDER &&
-                        settings.multiFolderMemory == MultiFolderMemory.REMEMBER
-                    ) {
-                        ix.copy(openFolderIds = settings.rememberedOpenFolders, multiHydrated = true)
-                    } else {
-                        ix.copy(multiHydrated = true)
-                    }
+            // Only the first settings matter: multiHydrated is never cleared, so every later
+            // value left the state as it was (and kept this collector running for nothing).
+            val settings = store.settings.first()
+            interaction.update { ix ->
+                if (ix.multiHydrated) {
+                    ix
+                } else if (settings.contentViewMode == ContentViewMode.MULTI_FOLDER &&
+                    settings.multiFolderMemory == MultiFolderMemory.REMEMBER
+                ) {
+                    ix.copy(openFolderIds = settings.rememberedOpenFolders, multiHydrated = true)
+                } else {
+                    ix.copy(multiHydrated = true)
                 }
             }
         }
@@ -1735,9 +1895,11 @@ class GalleryViewModel(
                 if (it.query != query) return@update it
                 val ids = hits.map { h -> h.id }
                 // The glow greets new results, not the same list found again while indexing.
-                val fresh = ids.isNotEmpty() && ids != it.smartResultIds
+                val same = ids == it.smartResultIds
+                val fresh = ids.isNotEmpty() && !same
                 it.copy(
-                    smartResultIds = ids,
+                    // The same list found again keeps its object: the results built from it are kept.
+                    smartResultIds = if (same) it.smartResultIds else ids,
                     smartSearching = false,
                     smartResultsVersion = if (fresh) it.smartResultsVersion + 1 else it.smartResultsVersion,
                 )
@@ -1937,6 +2099,14 @@ class GalleryViewModel(
 
     fun setSearchFilesFullScreen(value: Boolean) {
         store.update { it.copy(searchFilesFullScreen = value) }
+    }
+
+    fun setVideosOnlyInAlexet(value: Boolean) {
+        store.update { it.copy(videosOnlyInAlexet = value) }
+    }
+
+    fun setPlayerLikeExternal(value: Boolean) {
+        store.update { it.copy(playerLikeExternal = value) }
     }
 
     fun setVideoDoubleClickToGallery(value: Boolean) {
@@ -2319,6 +2489,7 @@ class GalleryViewModel(
     }
 
     fun recordScreenResolution(isWide: Boolean, width: Int, height: Int) {
+        screenWide = isWide
         if (width <= 0 || height <= 0) return
         dev.ander.alexet.ui.wallpaper.WallpaperResolutionMemory.update(isWide, width, height)
         val current = store.settings.value
@@ -2471,6 +2642,7 @@ class GalleryViewModel(
                 phoneFolderId = if (fromPhone) id else if (it.phoneFolderId == AlbumIds.TRASH) AlbumIds.NONE else it.phoneFolderId,
                 sessionFolderId = id,
                 viewerMediaId = null,
+                viewerAsPlayer = false,
             )
         }
         loadFolderMediaFast(id)
@@ -2510,13 +2682,29 @@ class GalleryViewModel(
                 sessionFolderId = id,
                 phoneFolderId = AlbumIds.NONE,
                 viewerMediaId = null,
+                viewerAsPlayer = false,
             )
         }
         loadFolderMediaFast(id)
     }
 
+    /** "Folders after folding" closed a folder: unfolding again gives the panes back as they were. */
+    private var foldClosedFolder = false
+
+    fun setFoldShowsFolders(value: Boolean) {
+        store.update { it.copy(foldShowsFolders = value) }
+    }
+
     fun onFolded() {
         val ix = interaction.value
+        if (store.settings.value.foldShowsFolders) {
+            // The outer screen shows the folders; the unfolded panes are kept for the way back.
+            foldClosedFolder = ix.phoneFolderId != AlbumIds.NONE || ix.openFolderIds.isNotEmpty() ||
+                ix.sessionFolderId != AlbumIds.NONE
+            if (ix.phoneFolderId != AlbumIds.NONE) interaction.update { it.copy(phoneFolderId = AlbumIds.NONE) }
+            return
+        }
+        foldClosedFolder = false
         val activeFolderId = when {
             ix.phoneFolderId != AlbumIds.NONE -> ix.phoneFolderId
             ix.openFolderIds.isNotEmpty() -> ix.openFolderIds.first()
@@ -2532,6 +2720,12 @@ class GalleryViewModel(
 
     fun onUnfolded() {
         val id = interaction.value.phoneFolderId
+        if (id == AlbumIds.NONE && foldClosedFolder) {
+            // Folded with "Folders after folding" and no folder opened since: the panes as before.
+            foldClosedFolder = false
+            return
+        }
+        foldClosedFolder = false
         if (id == AlbumIds.NONE) {
             interaction.update { ix ->
                 ix.copy(
@@ -2714,7 +2908,7 @@ class GalleryViewModel(
         }
         when {
             ix.openFolderIds.isEmpty() -> {
-                interaction.update { it.copy(viewerMediaId = null) }
+                interaction.update { it.copy(viewerMediaId = null, viewerAsPlayer = false) }
                 applyClickDragSlot(id, SLOT_MIDDLE, clicked = true)
             }
             clicked != AlbumIds.NONE -> {
@@ -2731,6 +2925,7 @@ class GalleryViewModel(
                         highlightedFolderId = AlbumIds.NONE,
                         sessionFolderId = id,
                         viewerMediaId = null,
+                        viewerAsPlayer = false,
                     ).resetSplitIfNeeded(next)
                 }
             }
@@ -3056,7 +3251,8 @@ class GalleryViewModel(
         if (!ix.contentOrderMode) return
         val folderId = ix.contentOrderFolderId
         val draftIds = ix.contentOrderDraftIds
-        val renameNumeric = ix.contentOrderRenameNumeric &&
+        // A numbered folder takes its new order into the names in any case.
+        val renameNumeric = (ix.contentOrderRenameNumeric || folderId in store.settings.value.numberedFolderIds) &&
             folderId !in store.settings.value.anonymousFolderIds
         if (folderId == AlbumIds.NONE || draftIds.isEmpty()) {
             cancelContentOrderMode()
@@ -3212,6 +3408,112 @@ class GalleryViewModel(
         return failed
     }
 
+    /** Numbered folder → names of the files Alexet just moved or copied in, in selection order. */
+    private val numberingNewNames = java.util.concurrent.ConcurrentHashMap<Long, List<String>>()
+
+    /** Files moved or copied into a numbered folder get the next numbers in this order. */
+    private fun noteNumberingOrder(folderId: Long, items: List<GalleryMedia>) {
+        if (folderId !in store.settings.value.numberedFolderIds) return
+        numberingNewNames[folderId] = numberingNewNames[folderId].orEmpty() + items.map { it.displayName }
+    }
+
+    /**
+     * Folder settings → Numbering. On: the files are named 1.ext, 2.ext… in the order they are
+     * shown now, and the folder is sorted by name from then on. Off: the names stay.
+     */
+    fun toggleFolderNumbering(folderId: Long, launchWrite: (android.content.IntentSender) -> Unit) {
+        if (folderId == AlbumIds.NONE) return
+        val settings = store.settings.value
+        if (folderId in settings.numberedFolderIds) {
+            store.update { it.copy(numberedFolderIds = it.numberedFolderIds - folderId) }
+            numberingNewNames.remove(folderId)
+            return
+        }
+        // The name mixer gives random names: the two can't both name the files.
+        if (folderId in settings.anonymousFolderIds) return
+        val ordered = uiState.value.filesIn(folderId).filter { !it.isEncrypted && !repository.isDownloading(it) }
+        val legacy = albumLegacyIds(folderId)
+        store.update { st ->
+            st.copy(
+                numberedFolderIds = st.numberedFolderIds + folderId,
+                // The numbers carry the order now: sorted by name, no separately saved order.
+                folderSorts = st.folderSorts - folderId - legacy + (folderId to SortSpec(SortField.NAME, SortOrder.ASCENDING)),
+                folderContentOrders = st.folderContentOrders - folderId - legacy,
+            )
+        }
+        numberingNewNames.remove(folderId)
+        if (ordered.isEmpty()) return
+        viewModelScope.launch(fileOperationErrors(R.string.rename_failed) { _transferProgress.value = null }) {
+            val failed = try {
+                runContentOrderRename(ordered)
+            } finally {
+                _transferProgress.value = null
+            }
+            if (failed.isNotEmpty()) {
+                val sender = repository.createWriteRequest(failed)
+                if (sender != null) {
+                    pendingAfterWrite = {
+                        viewModelScope.launch(fileOperationErrors(R.string.rename_failed) { _transferProgress.value = null }) {
+                            try {
+                                runContentOrderRename(ordered)
+                            } finally {
+                                _transferProgress.value = null
+                            }
+                        }
+                    }
+                    launchWrite(sender)
+                }
+            }
+        }
+    }
+
+    /**
+     * Keeps a numbered folder's names in order after any change: a deleted file's gap closes, and
+     * files that came in (from Alexet in selection order, from elsewhere by date) get the next numbers.
+     */
+    private suspend fun keepFolderNumbered(folderId: Long) {
+        val state = uiState.value
+        if (folderId !in state.settings.numberedFolderIds || folderId in state.settings.anonymousFolderIds) return
+        // A running operation or a hand-made order still changes the folder: its end comes here again.
+        if (_transferProgress.value != null) return
+        if (state.contentOrderMode && state.contentOrderFolderId == folderId) return
+        val files = state.filesIn(folderId).filter { !it.isEncrypted && !repository.isDownloading(it) }
+        if (files.isEmpty()) return
+        val ordered = dev.ander.alexet.data.FolderNumbering.order(
+            files.map { dev.ander.alexet.data.FolderNumbering.Entry(it.id, it.displayName, it.dateAddedMs) },
+            numberingNewNames[folderId].orEmpty(),
+        )
+        val from = dev.ander.alexet.data.FolderNumbering.firstMisplaced(ordered)
+        if (from < 0) {
+            numberingNewNames.remove(folderId)
+            return
+        }
+        val byId = files.associateBy { it.id }
+        val tail = ordered.drop(from).mapNotNull { byId[it.id] }
+        val (_, failed) = repository.renameToNumericOrder(tail, startAt = from + 1)
+        if (failed.isEmpty()) {
+            numberingNewNames.remove(folderId)
+        } else {
+            AppLog.w("GalleryViewModel", "Numbering of folder $folderId: ${failed.size} file(s) not renamed")
+        }
+    }
+
+    init {
+        // Numbered folders follow every change of their files, a moment after it settles.
+        viewModelScope.launch {
+            uiState
+                .map { s ->
+                    s.settings.numberedFolderIds.associateWith { id -> s.filesIn(id).map { it.id to it.displayName } }
+                }
+                .distinctUntilChanged()
+                .collectLatest { folders ->
+                    if (folders.isEmpty()) return@collectLatest
+                    delay(NUMBERING_SETTLE_MS)
+                    folders.keys.forEach { keepFolderNumbered(it) }
+                }
+        }
+    }
+
     fun toggleStamp(albumId: Long) {
         if (interaction.value.selectedFileIds.isEmpty()) return
         if (blockIfFolderDeleting(albumId)) return
@@ -3246,6 +3548,7 @@ class GalleryViewModel(
             !album.isSecure && items.any { it.bucketId != album.id }
         }
         if (items.isEmpty() || dest.isEmpty()) return
+        dest.forEach { noteNumberingOrder(it.id, items) }
         val sourceIds = items.map { it.bucketId }
         // Counted over the folders actually copied to (private ones were filtered out above).
         val total = dest.sumOf { d -> items.count { it.bucketId != d.id } }
@@ -3293,7 +3596,8 @@ class GalleryViewModel(
         }
     }
 
-    fun openMedia(item: GalleryMedia) {
+    /** [asPlayer]: a video opens in player mode (only the list's videos, played at once). */
+    fun openMedia(item: GalleryMedia, asPlayer: Boolean = false) {
         AppLog.event("Action") { "openMedia id=${item.id} ${item.displayName} video=${item.isVideo}" }
         if (interaction.value.selectedFileIds.isNotEmpty()) {
             toggleFileSelected(item.id)
@@ -3309,7 +3613,7 @@ class GalleryViewModel(
         // Decoding starts now, while the viewer is being built.
         dev.ander.alexet.ui.components.ViewerPrefetch.start(getApplication(), item, viewModelScope)
         lastActiveViewerMedia = item
-        interaction.update { it.copy(viewerMediaId = item.id) }
+        interaction.update { it.copy(viewerMediaId = item.id, viewerAsPlayer = asPlayer && item.isVideo) }
     }
 
     /** A document, an archive, an app…: opened in the app the phone has for it. */
@@ -3339,6 +3643,8 @@ class GalleryViewModel(
         }
     }
 
+    private data class OtherFilesSettings(val all: Boolean, val ids: Set<Long>, val last: Long, val otherFolderTiles: Boolean)
+
     // ---------------------------------------------------------------- archive window
 
     /** An archive shown in its window: the listing (null while read) and the folder inside it. */
@@ -3351,7 +3657,11 @@ class GalleryViewModel(
         /** Entry being unpacked to open it; [progress] 0..100, or -1 when the size is unknown. */
         val extracting: String? = null,
         val progress: Int = -1,
-    )
+        /** The whole archive is being unpacked into a folder ([progress] as above). */
+        val unpacking: Boolean = false,
+    ) {
+        val busy: Boolean get() = extracting != null || unpacking
+    }
 
     private val _archiveBrowser = MutableStateFlow<ArchiveBrowserState?>(null)
     val archiveBrowser: StateFlow<ArchiveBrowserState?> = _archiveBrowser.asStateFlow()
@@ -3387,7 +3697,7 @@ class GalleryViewModel(
     fun archiveBack() {
         val s = _archiveBrowser.value ?: return
         when {
-            s.extracting != null -> cancelArchiveExtract()
+            s.busy -> cancelArchiveExtract()
             s.dir.isEmpty() -> closeArchive()
             else -> archiveNavigate(s.dir.substringBeforeLast('/', ""))
         }
@@ -3407,7 +3717,88 @@ class GalleryViewModel(
 
     fun cancelArchiveExtract() {
         archiveExtractJob?.cancel()
-        _archiveBrowser.update { it?.copy(extracting = null, progress = -1) }
+        _archiveBrowser.update { it?.copy(extracting = null, progress = -1, unpacking = false) }
+    }
+
+    /** The folder an unpacking creates by default: the archive's name without the extension. */
+    fun archiveFolderName(): String =
+        _archiveBrowser.value?.let { dev.ander.alexet.data.ArchiveReader.folderNameFor(it.name) }.orEmpty()
+
+    /** The whole archive into an existing folder. */
+    fun extractArchiveToAlbum(albumId: Long) {
+        val album = resolveAlbum(albumId) ?: return
+        viewModelScope.launch {
+            val dir = withContext(Dispatchers.IO) { repository.folderDirectory(album) }
+            if (dir == null) toast(R.string.archive_unpack_failed) else extractArchiveTo(dir)
+        }
+    }
+
+    /** The whole archive into a folder chosen in the system picker. */
+    fun extractArchiveToTree(treeUri: Uri) {
+        val docId = runCatching { android.provider.DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull()
+        if (docId == null) {
+            toast(R.string.archive_unpack_failed)
+            return
+        }
+        val volume = docId.substringBefore(':')
+        val path = docId.substringAfter(':', "").trim('/')
+        val root = if (volume.equals("primary", ignoreCase = true)) {
+            android.os.Environment.getExternalStorageDirectory()
+        } else {
+            File("/storage", volume)
+        }
+        extractArchiveTo(if (path.isEmpty()) root else File(root, path))
+    }
+
+    /** The whole archive into a new folder [name], made next to the archive (" (1)" when taken). */
+    fun extractArchiveToNewFolder(name: String) {
+        val s = _archiveBrowser.value ?: return
+        val parent = File(s.path).parentFile ?: return
+        val safe = dev.ander.alexet.data.sanitizeFileName(name, fallback = "Archive")
+        var dir = File(parent, safe)
+        var index = 1
+        while (dir.exists() && index < 1_000) dir = File(parent, "$safe (${index++})")
+        extractArchiveTo(dir)
+    }
+
+    private fun extractArchiveTo(targetDir: File) {
+        val s = _archiveBrowser.value ?: return
+        val listing = s.listing as? dev.ander.alexet.data.ArchiveReader.Listing.Ok ?: return
+        if (!listing.canExtract) {
+            toast(R.string.archive_list_only)
+            return
+        }
+        AppLog.event("Action") { "extractArchive ${s.name} -> ${targetDir.absolutePath}" }
+        val total = listing.entries.filter { !it.isDirectory }.let { files ->
+            if (files.any { it.size < 0 }) -1L else files.sumOf { it.size }
+        }
+        archiveExtractJob?.cancel()
+        _archiveBrowser.update { it?.copy(extracting = null, unpacking = true, progress = -1) }
+        archiveExtractJob = viewModelScope.launch {
+            val job = coroutineContext[Job]
+            val result = withContext(NonCancellable + Dispatchers.IO) {
+                dev.ander.alexet.data.ArchiveReader.extractAll(
+                    archive = File(s.path),
+                    targetDir = targetDir,
+                    totalBytes = total,
+                    onProgress = { p -> _archiveBrowser.update { st -> if (st?.unpacking == true) st.copy(progress = p) else st } },
+                    isCancelled = { job?.isActive != true },
+                ).also { r ->
+                    // What was written is shown even after a cancel.
+                    if (r.files.isNotEmpty()) repository.showNewFiles(r.files.map { it.absolutePath })
+                }
+            }
+            _archiveBrowser.update { it?.copy(unpacking = false, progress = -1) }
+            if (!isActive) return@launch
+            AppLog.event("Archive") { "${s.name}: unpacked ${result.files.size}, skipped ${result.skipped}, stopped=${result.stopped}" }
+            val app = getApplication<Application>()
+            val text = when {
+                result.files.isEmpty() && (result.stopped || result.skipped > 0) -> app.getString(R.string.archive_unpack_failed)
+                result.stopped || result.skipped > 0 -> app.getString(R.string.archive_unpacked_partial, result.files.size, targetDir.name)
+                else -> app.getString(R.string.archive_unpacked, result.files.size, targetDir.name)
+            }
+            android.widget.Toast.makeText(app, text, android.widget.Toast.LENGTH_LONG).show()
+        }
     }
 
     /** The whole archive in the app the phone has for it. */
@@ -3454,7 +3845,7 @@ class GalleryViewModel(
             if (mime != null && (mime.startsWith("image/") || mime.startsWith("video/"))) {
                 // The window steps aside while the viewer is open and comes back when it closes.
                 val media = withContext(Dispatchers.IO) { externalMediaFor(Uri.fromFile(target)) }
-                interaction.update { it.copy(viewerMediaId = media.id, externalMedia = media, pendingUri = null) }
+                interaction.update { it.copy(viewerMediaId = media.id, viewerAsPlayer = false, externalMedia = media, pendingUri = null) }
             } else {
                 archiveFileOutside = target
                 openFileOutside(target, dev.ander.alexet.data.OtherFiles.mimeOf(target.name), target.name)
@@ -3488,7 +3879,7 @@ class GalleryViewModel(
         AppLog.event("Action") { "closeViewer" }
         synchronized(viewerCacheLock) {
             lastActiveViewerMedia = null
-            interaction.update { it.copy(viewerMediaId = null, pendingUri = null, externalMedia = null) }
+            interaction.update { it.copy(viewerMediaId = null, viewerAsPlayer = false, pendingUri = null, externalMedia = null) }
         }
     }
 
@@ -3497,8 +3888,15 @@ class GalleryViewModel(
             lastActiveViewerMedia = null
         } else {
             val state = uiState.value
-            val found = state.media.firstOrNull { it.id == id }
-                ?: state.folderMedia.values.firstNotNullOfOrNull { list -> list.firstOrNull { it.id == id } }
+            // Each viewer swipe looked through the library: one id map per library instead.
+            // The first row wins, the library before the folder lists, as the scans found it.
+            val byId = UiStateMemo.get("selectMediaById", state.media, state.folderMedia) {
+                val map = HashMap<Long, GalleryMedia>(state.media.size * 2)
+                state.media.forEach { map.putIfAbsent(it.id, it) }
+                state.folderMedia.values.forEach { list -> list.forEach { map.putIfAbsent(it.id, it) } }
+                map
+            }
+            val found = byId[id]
             found?.let {
                 if (blockIfDownloading(it)) return
                 lastActiveViewerMedia = it
@@ -3507,6 +3905,7 @@ class GalleryViewModel(
         interaction.update {
             it.copy(
                 viewerMediaId = id,
+                viewerAsPlayer = if (id == null) false else it.viewerAsPlayer,
                 pendingUri = if (id == null) null else it.pendingUri,
             )
         }
@@ -3514,7 +3913,7 @@ class GalleryViewModel(
 
     fun openUri(uri: Uri) {
         AppLog.event("Action") { "openUri $uri" }
-        interaction.update { it.copy(pendingUri = uri, viewerMediaId = null) }
+        interaction.update { it.copy(pendingUri = uri, viewerMediaId = null, viewerAsPlayer = false) }
         viewModelScope.launch {
             val match = matchIncomingUri(uri, repository.refresh())
             if (match != null) {
@@ -3522,6 +3921,7 @@ class GalleryViewModel(
                 interaction.update {
                     it.copy(
                         viewerMediaId = match.id,
+                        viewerAsPlayer = false,
                         sessionFolderId = match.bucketId,
                         pendingUri = uri,
                         externalMedia = null,
@@ -3533,6 +3933,7 @@ class GalleryViewModel(
                 interaction.update {
                     it.copy(
                         viewerMediaId = extItem.id,
+                        viewerAsPlayer = false,
                         externalMedia = extItem,
                         pendingUri = uri,
                     )
@@ -3673,11 +4074,11 @@ class GalleryViewModel(
         )
     }
 
-    fun playExternally(context: Context, media: GalleryMedia): Boolean {
+    fun playExternally(context: Context, media: GalleryMedia, asPlayer: Boolean = false): Boolean {
         if (blockIfDownloading(media)) return false
         if (blockIfQuickEditing(media)) return false
         if (media.absolutePath?.endsWith(SecureFolderManager.ENC_EXTENSION) == true) {
-            openMedia(media)
+            openMedia(media, asPlayer)
             return true
         }
         val now = SystemClock.elapsedRealtime()
@@ -3693,7 +4094,7 @@ class GalleryViewModel(
         if (!ok) {
             lastExternalPlayId = 0L
             // No other app plays videos: Alexet's own player does.
-            openMedia(media)
+            openMedia(media, asPlayer)
         }
         return ok
     }
@@ -4270,6 +4671,7 @@ class GalleryViewModel(
         barSlots: List<SelectionAction?>,
         menuOrder: List<SelectionAction>,
         hidden: Set<SelectionAction>,
+        extraCards: List<List<SelectionAction>>,
     ) {
         val padded = (barSlots + List(6) { null }).take(6)
         store.update {
@@ -4277,6 +4679,10 @@ class GalleryViewModel(
                 barActionSlots = padded,
                 menuActionOrder = menuOrder,
                 hiddenSelectionActions = hidden,
+                extraMenuCards = extraCards
+                    .map { card -> card.distinct() }
+                    .filter { card -> card.isNotEmpty() }
+                    .take(AppSettings.MAX_MENU_CARDS - 1),
             )
         }
     }
@@ -4333,6 +4739,46 @@ class GalleryViewModel(
                 }
             }
         }
+    }
+
+    /** The selection made ready to be dragged into another app (see [prepareExternalDrag]); null until then. */
+    @Volatile
+    var externalDragFiles: ExternalDragFiles? = null
+        private set
+    private var externalDragJob: Job? = null
+
+    /**
+     * Gets the selection ready for a drag into another app, as a share would send it (no EXIF when
+     * sharing removes it, private files decrypted), with a picture for the drag shadow.
+     */
+    fun prepareExternalDrag(context: Context) {
+        clearExternalDrag()
+        val items = selectedMedia().filter { !repository.isDownloading(it) }
+        if (items.isEmpty()) return
+        val app = context.applicationContext
+        externalDragJob = viewModelScope.launch(Dispatchers.IO) {
+            cleanOldShareCache(app)
+            val ready = items.mapNotNull { item ->
+                resolveShareUri(app, item)?.let { uri -> uri to item.mimeType.ifBlank { "*/*" } }
+            }
+            if (ready.isEmpty()) return@launch
+            externalDragFiles = ExternalDragFiles(
+                uris = ready.map { it.first },
+                mimeTypes = ready.map { it.second }.distinct(),
+                thumbnail = dragThumbnail(app, items.first()),
+            )
+        }
+    }
+
+    fun clearExternalDrag() {
+        externalDragJob?.cancel()
+        externalDragJob = null
+        externalDragFiles = null
+    }
+
+    private fun dragThumbnail(context: Context, item: GalleryMedia): android.graphics.Bitmap? {
+        if (item.isEncrypted || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || item.uri.scheme != "content") return null
+        return runCatching { context.contentResolver.loadThumbnail(item.uri, android.util.Size(256, 256), null) }.getOrNull()
     }
 
     fun shareSelection(context: Context) {
@@ -4531,8 +4977,11 @@ class GalleryViewModel(
                 if (sender != null) {
                     pendingAfterWrite = {
                         viewModelScope.launch {
+                            // First index of each item, as indexOf gave it (it scanned the list per item).
+                            val indexOfItem = HashMap<GalleryMedia, Int>(items.size * 2)
+                            items.forEachIndexed { i, media -> indexOfItem.putIfAbsent(media, i) }
                             val remaining = failed.mapIndexed { idx, item ->
-                                val originalIndex = items.indexOf(item).takeIf { it >= 0 } ?: idx
+                                val originalIndex = indexOfItem[item] ?: idx
                                 item to request.applyTo(item, originalIndex + 1, padDigits)
                             }
                             repository.renameAll(remaining)
@@ -4865,6 +5314,7 @@ class GalleryViewModel(
         val randomize = store.settings.value.randomizeFileNamesInPrivateFolders
         val strip = store.settings.value.stripExifInPrivateFolders
         val followSelectionOrder = store.settings.value.operationsFollowSelectionOrder
+        noteNumberingOrder(dest.id, items)
         // Finished even when the app is left meanwhile (Back cancels this scope), like the move to
         // a folder on disk: a cut left part of the files moved and part not.
         val moved = withContext(kotlinx.coroutines.NonCancellable) {
@@ -5383,12 +5833,16 @@ class GalleryViewModel(
                     val direct = items.filter { it.id in trashedIds && it.absolutePath != null }
                     if (direct.isNotEmpty()) repository.deleteDirect(direct)
                 }
+                // Maps instead of a scan of the batch per file (the first item of an id wins, as before).
+                val itemById = HashMap<Long, GalleryMedia>(items.size * 2)
+                items.forEach { itemById.putIfAbsent(it.id, it) }
                 val stillNeedConfirm = trashed.filter { itemT ->
-                    val media = items.firstOrNull { it.id == itemT.id }
+                    val media = itemById[itemT.id]
                     media != null && media.uri.scheme == "content" && !itemT.sourceRemoved
                 }
+                val confirmIds = stillNeedConfirm.mapTo(HashSet()) { it.id }
                 val storeItems = items.filter { media ->
-                    stillNeedConfirm.any { it.id == media.id } && media.uri.scheme == "content"
+                    media.id in confirmIds && media.uri.scheme == "content"
                 }
                 if (storeItems.isNotEmpty()) {
                     val sender = repository.createDeleteRequest(storeItems)
@@ -5450,16 +5904,31 @@ class GalleryViewModel(
         if (perAlbum.values.any { files -> files.any { it.isEncrypted } }) return false
         clearSelection()
         val app = getApplication<Application>()
-        var skipped = 0
-        perAlbum.forEach { (album, files) ->
-            val ready = files.filter { !repository.isDownloading(it) }
-            skipped += files.size - ready.size
-            if (ready.isEmpty()) return@forEach
-            closeFolderEverywhere(album.id)
-            FolderDeleteQueue.enqueue(app, album.id, album.name, ready, toTrash = !skipTrash)
+        val settings = store.settings.value
+        val otherFolderIds = repository.otherFolders.value.mapTo(HashSet()) { it.id }
+        perAlbum.keys.forEach { closeFolderEverywhere(it.id) }
+        viewModelScope.launch {
+            var skipped = 0
+            perAlbum.forEach { (album, media) ->
+                // A folder that shows its other files (documents, audio…) loses them too: with
+                // them left behind the folder itself stayed, holding only those files.
+                val showsOther = settings.showsAllFiles(album.id) ||
+                    (settings.showOtherFileFolders && album.id in otherFolderIds)
+                val others = if (!showsOther) emptyList() else withContext(Dispatchers.IO) {
+                    repository.folderDirectory(album)
+                        ?.let { dir -> dev.ander.alexet.data.OtherFiles.list(dir, album.id, album.name, album.relativePath) }
+                        .orEmpty()
+                }
+                val paths = media.mapNotNullTo(HashSet()) { it.absolutePath }
+                val files = media + others.filter { it.absolutePath !in paths }
+                val ready = files.filter { !repository.isDownloading(it) }
+                skipped += files.size - ready.size
+                if (ready.isEmpty()) return@forEach
+                FolderDeleteQueue.enqueue(app, album.id, album.name, ready, toTrash = !skipTrash)
+            }
+            if (skipped == 1) toast(R.string.download_in_progress_one)
+            else if (skipped > 1) toast(R.string.download_in_progress_skipped, skipped)
         }
-        if (skipped == 1) toast(R.string.download_in_progress_one)
-        else if (skipped > 1) toast(R.string.download_in_progress_skipped, skipped)
         return true
     }
 
@@ -5871,6 +6340,87 @@ class GalleryViewModel(
         }
         // Folder ids of the file (an older version's kind) mapped now, not at the next start.
         uiState.value.allAlbums.takeIf { it.isNotEmpty() }?.let { remapStoredFolderIds(it) }
+    }
+
+    // ---------------------------------------------------------------- mosaic
+
+    /** The photos being laid out into a mosaic (their sizes as shown); null when none is open. */
+    private val _mosaic = MutableStateFlow<List<dev.ander.alexet.data.MosaicSource>?>(null)
+    val mosaic: StateFlow<List<dev.ander.alexet.data.MosaicSource>?> = _mosaic.asStateFlow()
+    private val _mosaicSaving = MutableStateFlow(false)
+    val mosaicSaving: StateFlow<Boolean> = _mosaicSaving.asStateFlow()
+
+    /** Several selected photos: laid out into one picture (the mosaic screen). */
+    fun openMosaic(photos: List<GalleryMedia>) {
+        AppLog.event("Action") { "openMosaic photos=${photos.size}" }
+        if (blockIfPrivate(photos)) return
+        val ready = excludeDownloading(withoutOtherFiles(photos)).filter { !it.isVideo && it.absolutePath != null }
+        if (ready.size < 2) return
+        viewModelScope.launch {
+            val sources = withContext(Dispatchers.IO) {
+                ready.mapNotNull { media ->
+                    dev.ander.alexet.data.MosaicRenderer.shownSize(File(media.absolutePath!!))
+                        ?.let { (w, h) -> dev.ander.alexet.data.MosaicSource(media, w, h) }
+                }
+            }
+            if (sources.size < 2) {
+                toast(R.string.mosaic_failed)
+                return@launch
+            }
+            _mosaic.value = sources
+        }
+    }
+
+    fun closeMosaic() {
+        if (_mosaicSaving.value) return
+        _mosaic.value = null
+    }
+
+    /**
+     * The laid-out photos drawn into one new picture next to the first photo (or in
+     * Pictures/Alexet), then shown in the viewer.
+     */
+    fun saveMosaic(pieces: List<dev.ander.alexet.data.MosaicPiece>) {
+        if (_mosaicSaving.value || pieces.isEmpty()) return
+        _mosaicSaving.value = true
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            val saved = withContext(Dispatchers.IO) {
+                runCatching {
+                    val first = pieces.first().source.media
+                    val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
+                    val folder = first.absolutePath?.let { File(it).parentFile }?.takeIf { it.isDirectory && it.canWrite() }
+                        ?: File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES), "Alexet").apply { mkdirs() }
+                    var out = File(folder, "mozaika_$stamp.jpg")
+                    var n = 1
+                    while (out.exists()) out = File(folder, "mozaika_${stamp}_${n++}.jpg")
+                    repository.noteOwnWrite(out)
+                    val ok = dev.ander.alexet.data.MosaicRenderer.render(pieces, out)
+                    repository.endOwnWrite(out)
+                    if (ok && out.length() > 0L) out else {
+                        out.delete()
+                        null
+                    }
+                }.getOrNull()
+            }
+            if (saved == null) {
+                _mosaicSaving.value = false
+                toast(R.string.mosaic_failed)
+                return@launch
+            }
+            scanAndWait(app, saved)
+            repository.requestRefresh()
+            // The new picture from the library list, to open it in the editor.
+            val media = kotlinx.coroutines.withTimeoutOrNull(6_000L) {
+                repository.media.first { list -> list.any { it.absolutePath == saved.absolutePath } }
+                    .first { it.absolutePath == saved.absolutePath }
+            }
+            _mosaicSaving.value = false
+            _mosaic.value = null
+            toast(R.string.mosaic_saved)
+            // Shown at once; the editor is a tap away from there ("Edit" in the viewer).
+            if (media != null) openMedia(media)
+        }
     }
 
     fun openEditor(media: GalleryMedia) {
@@ -7087,6 +7637,9 @@ class GalleryViewModel(
         /** ~400k chars (~800 KB in UTF-16) stays below the clipboard's binder limit. */
         private const val DEBUG_LOG_CLIPBOARD_CHARS = 400_000
         private const val KEY_VIEWER_MEDIA_ID = "viewerMediaId"
+        /** A numbered folder is put in order this long after its files last changed. */
+        private const val NUMBERING_SETTLE_MS = 1_500L
+        private const val KEY_VIEWER_AS_PLAYER = "viewerAsPlayer"
         private const val KEY_EDITING_MEDIA_ID = "editingMediaId"
         /** Files unpacked from archives to be viewed (cache dir, removed with the window). */
         private const val ARCHIVE_CACHE_DIR = "archive_view"

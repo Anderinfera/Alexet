@@ -22,16 +22,23 @@ class QuickPhotoEncoder {
     private var rendered: Bitmap? = null
     private var scaledKey: Float = 1f
     private var scaled: Bitmap? = null
+    /**
+     * Sizes already measured for [rendered]: "fit to size" tries settings that are then set, and
+     * the slider comes back to qualities it passed. Cleared with the picture.
+     */
+    private val sizes = HashMap<Triple<Float, Int, String>, Long>()
 
     suspend fun bytes(context: Context, source: QuickEditSource, file: File?, settings: QuickEditSettings): Long? =
         withContext(Dispatchers.Default) {
             mutex.withLock {
                 try {
+                    val ext = QuickEdit.photoExtension(source.media, settings.quality)
+                    val sizeKey = Triple(settings.scale, settings.quality, ext)
+                    if (renderedKey == renderedKeyOf(source, settings)) sizes[sizeKey]?.let { return@withLock it }
                     val picture = picture(context, source, file, settings) ?: return@withLock null
                     val counter = CountingStream()
-                    val ext = QuickEdit.photoExtension(source.media, settings.quality)
                     if (!picture.compress(formatFor(ext), settings.quality, counter)) return@withLock null
-                    counter.count
+                    counter.count.also { sizes[sizeKey] = it }
                 } catch (_: OutOfMemoryError) {
                     clearLocked()
                     null
@@ -41,8 +48,11 @@ class QuickPhotoEncoder {
 
     suspend fun clear() = mutex.withLock { clearLocked() }
 
+    private fun renderedKeyOf(source: QuickEditSource, settings: QuickEditSettings): Any =
+        listOf(source.media.id, settings.rotation, settings.ratio, settings.panX, settings.panY)
+
     private fun picture(context: Context, source: QuickEditSource, file: File?, settings: QuickEditSettings): Bitmap? {
-        val key = listOf(source.media.id, settings.rotation, settings.ratio, settings.panX, settings.panY)
+        val key = renderedKeyOf(source, settings)
         var base = rendered?.takeIf { renderedKey == key && !it.isRecycled }
         if (base == null) {
             clearLocked()
@@ -69,6 +79,7 @@ class QuickPhotoEncoder {
         scaled = null
         rendered = null
         renderedKey = null
+        sizes.clear()
     }
 
     private class CountingStream : OutputStream() {

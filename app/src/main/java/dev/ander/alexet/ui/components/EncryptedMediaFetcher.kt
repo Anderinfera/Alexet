@@ -65,6 +65,22 @@ class EncryptedMediaFetcher(
     }
 
     private fun decodeLocked(key: javax.crypto.SecretKey, isVideo: Boolean, maxDim: Int): FetchResult? {
+        if (isVideo) {
+            // Chunked files are decrypted only where the retriever reads (moov and the first frames).
+            val reader = runCatching { dev.ander.alexet.data.EncryptedFormat.openRandomAccess(file, key, cachedChunks = 2) }.getOrNull()
+            if (reader != null) {
+                val bmp = videoFrameFromEncrypted(reader, maxDim)
+                if (bmp == null) {
+                    dev.ander.alexet.data.AppLog.e("AlexetSecure", "EncryptedMediaFetcher: videoFrameFromEncrypted failed for ${file.path}")
+                    return null
+                }
+                return ImageFetchResult(
+                    image = bmp.asImage(),
+                    isSampled = true,
+                    dataSource = DataSource.DISK,
+                )
+            }
+        }
         // Private copy owned by this fetcher; wiped once decoded
         val bytes = SecureRamCache.getOrDecrypt(file, key, cache = !isVideo)
         if (bytes == null || bytes.isEmpty()) {
@@ -128,6 +144,28 @@ class EncryptedMediaFetcher(
                 runCatching { retriever.release() }
             }
         }.getOrNull()
+    }
+
+    /** Like [videoFrameFromBytes], reading a chunked private file in place; closes [reader]. */
+    private fun videoFrameFromEncrypted(reader: dev.ander.alexet.data.EncryptedFormat.RandomAccessReader, sizePx: Int): Bitmap? {
+        val source = runCatching { dev.ander.alexet.data.Mp4MetaRepair.dataSourceFor(reader) }
+            .getOrElse {
+                runCatching { reader.close() }
+                return null
+            }
+        return try {
+            runCatching {
+                val retriever = MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(source)
+                    extractVideoFrame(retriever, sizePx)
+                } finally {
+                    runCatching { retriever.release() }
+                }
+            }.getOrNull()
+        } finally {
+            runCatching { source.close() }
+        }
     }
 
     private fun extractVideoFrame(retriever: MediaMetadataRetriever, sizePx: Int): Bitmap? {

@@ -236,6 +236,8 @@ fun AudioVisual(
                 // The glow's gradient, made once per size and colour (a new one every frame before);
                 // its strength is the alpha it is drawn with.
                 val glowCache = remember(glowColor) { GlowBrushCache() }
+                // The record's and the lights' gradients and paths, made again only when they move or resize.
+                val recordCache = remember { RecordDrawCache() }
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val c = Offset(size.width / 2f, size.height / 2f)
                     val discR = size.minDimension * 0.29f * pulse
@@ -280,11 +282,11 @@ fun AudioVisual(
                     }
                     // The record, turning
                     rotate(angle, pivot = c) {
-                        drawRecord(c, discR, cover, labelColor, labelEdge, labelMark)
+                        drawRecord(c, discR, cover, labelColor, labelEdge, labelMark, recordCache)
                     }
                     // Reflections: they stay with the light while the record turns, and sway.
                     val swayDeg = sway * LIGHT_SWAY_DEG * sin(swayPhase)
-                    drawLights(c, discR, labelR = discR * LABEL_RATIO, rotationDeg = LIGHT_BASE_DEG + swayDeg)
+                    drawLights(c, discR, labelR = discR * LABEL_RATIO, rotationDeg = LIGHT_BASE_DEG + swayDeg, cache = recordCache)
                     // Spindle hole
                     drawCircle(backdrop, radius = discR * 0.035f, center = c)
                 }
@@ -340,16 +342,18 @@ private const val LIGHT_SWAY_DEG = 9f
 private const val LIGHT_SWAY_PERIOD_S = 2.6f
 
 /** A black record with grooves and a label (the cover on it, if any). Drawn turned by the caller. */
-private fun DrawScope.drawRecord(c: Offset, r: Float, cover: ImageBitmap?, labelColor: Color, labelEdge: Color, labelMark: Color) {
+private fun DrawScope.drawRecord(
+    c: Offset,
+    r: Float,
+    cover: ImageBitmap?,
+    labelColor: Color,
+    labelEdge: Color,
+    labelMark: Color,
+    cache: RecordDrawCache,
+) {
     // Vinyl, a little lighter towards the edge
     drawCircle(
-        brush = Brush.radialGradient(
-            0f to Color(0xFF0B0B0C),
-            0.75f to Color(0xFF141416),
-            1f to Color(0xFF1C1C1F),
-            center = c,
-            radius = r,
-        ),
+        brush = cache.vinylBrush(c, r),
         radius = r,
         center = c,
     )
@@ -362,16 +366,16 @@ private fun DrawScope.drawRecord(c: Offset, r: Float, cover: ImageBitmap?, label
             color = Color.White.copy(alpha = if (k % 3 == 0) 0.11f else 0.05f),
             radius = gr,
             center = c,
-            style = Stroke(width = if (k % 3 == 0) 1.6f else 1f),
+            style = if (k % 3 == 0) GROOVE_STROKE_BOLD else GROOVE_STROKE,
         )
     }
     // Rim
-    drawCircle(Color.White.copy(alpha = 0.10f), radius = r, center = c, style = Stroke(width = 2f))
+    drawCircle(Color.White.copy(alpha = 0.10f), radius = r, center = c, style = EDGE_STROKE)
     // Dark band around the label (the dead wax)
     drawCircle(Color.Black, radius = labelR * 1.08f, center = c)
     // Label
     if (cover != null) {
-        clipPath(Path().apply { addOval(Rect(c, labelR)) }) {
+        clipPath(cache.labelClip(c, labelR)) {
             val scale = (labelR * 2f) / min(cover.width, cover.height).toFloat()
             val w = cover.width * scale
             val h = cover.height * scale
@@ -383,7 +387,7 @@ private fun DrawScope.drawRecord(c: Offset, r: Float, cover: ImageBitmap?, label
         }
     } else {
         drawCircle(labelColor, radius = labelR, center = c)
-        drawCircle(labelEdge.copy(alpha = 0.55f), radius = labelR * 0.82f, center = c, style = Stroke(width = 1.5f))
+        drawCircle(labelEdge.copy(alpha = 0.55f), radius = labelR * 0.82f, center = c, style = LABEL_RING_STROKE)
         // A printed mark on the label: shows the record turning
         drawArc(
             color = labelMark.copy(alpha = 0.5f),
@@ -392,21 +396,37 @@ private fun DrawScope.drawRecord(c: Offset, r: Float, cover: ImageBitmap?, label
             useCenter = false,
             topLeft = c - Offset(labelR * 0.6f, labelR * 0.6f),
             size = androidx.compose.ui.geometry.Size(labelR * 1.2f, labelR * 1.2f),
-            style = Stroke(width = labelR * 0.07f, cap = StrokeCap.Round),
+            style = cache.markStroke(c, labelR),
         )
     }
-    drawCircle(labelEdge, radius = labelR, center = c, style = Stroke(width = 2f))
+    drawCircle(labelEdge, radius = labelR, center = c, style = EDGE_STROKE)
 }
 
 /**
  * Two opposite light reflections on the vinyl (between the label and the rim), soft at their
  * sides, like light on a real record.
  */
-private fun DrawScope.drawLights(c: Offset, r: Float, labelR: Float, rotationDeg: Float) {
+private fun DrawScope.drawLights(c: Offset, r: Float, labelR: Float, rotationDeg: Float, cache: RecordDrawCache) {
+    rotate(rotationDeg, pivot = c) {
+        clipPath(cache.lightsRing(c, r, labelR)) {
+            drawCircle(brush = cache.lightsBrush(c), radius = r, center = c)
+        }
+    }
+}
+
+// The record's strokes: the same every frame.
+private val GROOVE_STROKE = Stroke(width = 1f)
+private val GROOVE_STROKE_BOLD = Stroke(width = 1.6f)
+/** The rim's and the label edge's stroke. */
+private val EDGE_STROKE = Stroke(width = 2f)
+private val LABEL_RING_STROKE = Stroke(width = 1.5f)
+
+/** The reflections' sweep: two soft white lights opposite each other. */
+private val LIGHT_STOPS: Array<Pair<Float, Color>> = run {
     val clear = Color.White.copy(alpha = 0f)
     val glow = Color.White.copy(alpha = 0.20f)
     val half = 0.045f // half width of a reflection, as a share of the circle
-    val stops = arrayOf(
+    arrayOf(
         0f to glow,
         half to clear,
         0.5f - half to clear,
@@ -415,14 +435,82 @@ private fun DrawScope.drawLights(c: Offset, r: Float, labelR: Float, rotationDeg
         1f - half to clear,
         1f to glow,
     )
-    val ring = Path().apply {
-        addOval(Rect(c, r * 0.985f))
-        addOval(Rect(c, labelR * 1.1f))
-        fillType = androidx.compose.ui.graphics.PathFillType.EvenOdd
+}
+
+/**
+ * The record's gradients, clip paths and the label mark's stroke, made again only when the
+ * record moves or changes size (every frame only while it pulses during loading).
+ */
+private class RecordDrawCache {
+    private var vinylCenter = Offset.Unspecified
+    private var vinylR = Float.NaN
+    private var vinyl: Brush? = null
+
+    private var labelCenter = Offset.Unspecified
+    private var labelR = Float.NaN
+    private val labelClip = Path()
+    private var markStroke = Stroke()
+
+    private var ringCenter = Offset.Unspecified
+    private var ringR = Float.NaN
+    private var ringLabelR = Float.NaN
+    private val ring = Path()
+
+    private var lightsCenter = Offset.Unspecified
+    private var lights: Brush? = null
+
+    fun vinylBrush(c: Offset, r: Float): Brush {
+        vinyl?.let { if (c == vinylCenter && r == vinylR) return it }
+        return Brush.radialGradient(
+            0f to Color(0xFF0B0B0C),
+            0.75f to Color(0xFF141416),
+            1f to Color(0xFF1C1C1F),
+            center = c,
+            radius = r,
+        ).also {
+            vinyl = it
+            vinylCenter = c
+            vinylR = r
+        }
     }
-    rotate(rotationDeg, pivot = c) {
-        clipPath(ring) {
-            drawCircle(brush = Brush.sweepGradient(*stops, center = c), radius = r, center = c)
+
+    private fun updateLabel(c: Offset, labelR: Float) {
+        if (c == labelCenter && labelR == this.labelR) return
+        labelClip.reset()
+        labelClip.addOval(Rect(c, labelR))
+        markStroke = Stroke(width = labelR * 0.07f, cap = StrokeCap.Round)
+        labelCenter = c
+        this.labelR = labelR
+    }
+
+    fun labelClip(c: Offset, labelR: Float): Path {
+        updateLabel(c, labelR)
+        return labelClip
+    }
+
+    fun markStroke(c: Offset, labelR: Float): Stroke {
+        updateLabel(c, labelR)
+        return markStroke
+    }
+
+    fun lightsRing(c: Offset, r: Float, labelR: Float): Path {
+        if (c != ringCenter || r != ringR || labelR != ringLabelR) {
+            ring.reset()
+            ring.addOval(Rect(c, r * 0.985f))
+            ring.addOval(Rect(c, labelR * 1.1f))
+            ring.fillType = androidx.compose.ui.graphics.PathFillType.EvenOdd
+            ringCenter = c
+            ringR = r
+            ringLabelR = labelR
+        }
+        return ring
+    }
+
+    fun lightsBrush(c: Offset): Brush {
+        lights?.let { if (c == lightsCenter) return it }
+        return Brush.sweepGradient(*LIGHT_STOPS, center = c).also {
+            lights = it
+            lightsCenter = c
         }
     }
 }

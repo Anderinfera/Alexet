@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.layout.aspectRatio
 import dev.ander.alexet.ui.components.SquareThumbnail
 import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import kotlin.math.roundToInt
@@ -122,6 +123,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -172,6 +174,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.roundToInt
 
 private const val STARTUP_LOADER_MIN_MS = 600L
+/** At most this long the marquee's last count stands in for a selection that has not caught up. */
+private const val SELECTION_SETTLE_MS = 500L
 private const val STARTUP_SETTLE_TIMEOUT_MS = 1_500L
 private const val STARTUP_COVER_TIMEOUT_MS = 1_500L
 
@@ -327,19 +331,6 @@ fun GalleryApp(
     ) { uri -> uri?.let { viewModel.saveDebugLog(context, it) } }
     // An archive's contents ("See all files"); out of the way while the viewer shows a file from it.
     val archiveBrowser by viewModel.archiveBrowser.collectAsStateWithLifecycle()
-    archiveBrowser?.let { archive ->
-        if (uiState.viewerMediaId == null) {
-            ArchiveBrowserDialog(
-                state = archive,
-                onNavigate = viewModel::archiveNavigate,
-                onOpenEntry = viewModel::openArchiveEntry,
-                onOpenOutside = viewModel::openArchiveOutside,
-                onCancelExtract = viewModel::cancelArchiveExtract,
-                onBack = viewModel::archiveBack,
-                onClose = viewModel::closeArchive,
-            )
-        }
-    }
     var showDebugLogDialog by remember { mutableStateOf(false) }
     if (showDebugLogDialog) {
         AlertDialog(
@@ -413,7 +404,8 @@ fun GalleryApp(
             )
         }
     }
-    val wide = if (foldable.isTabletop) false else (foldable.showListDetail || maxWidth >= 600.dp)
+    // Half folded like a laptop keeps the same layout as unfolded.
+    val wide = foldable.showListDetail || maxWidth >= 600.dp
     // A finished quick edit's notification: its folder, opened as this layout opens folders.
     val showFolderRequest by viewModel.showFolderRequest.collectAsState()
     LaunchedEffect(showFolderRequest) {
@@ -512,6 +504,14 @@ fun GalleryApp(
     }
 
     var pointerWindow by remember { mutableStateOf(Offset.Unspecified) }
+    // Split screen: two fingers drag the selection out into the other app.
+    val rootView = androidx.compose.ui.platform.LocalView.current
+    val inMultiWindow = remember(androidx.compose.ui.platform.LocalConfiguration.current) {
+        context.findActivity()?.isInMultiWindowMode == true
+    }
+    var externalDragStarted by remember { mutableStateOf(false) }
+    val dragAccent = MaterialTheme.colorScheme.primary.toArgb()
+    val dragOnAccent = MaterialTheme.colorScheme.onPrimary.toArgb()
     var rootInWindow by remember { mutableStateOf(Offset.Zero) }
     var rootCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
     val dragKindRef = rememberUpdatedState(uiState.dragKind)
@@ -521,8 +521,19 @@ fun GalleryApp(
     var armOrigin by remember { mutableStateOf(Offset.Unspecified) }
     var folderDragLive by remember { mutableStateOf(false) }
     var rightPaneBounds by remember { mutableStateOf(Rect.Zero) }
-    val albumBounds = remember { mutableMapOf<Long, Rect>() }
+    // Folder tiles' coordinates (null: no drop target); their bounds are read only while dragging.
+    val albumBounds = remember { mutableMapOf<Long, androidx.compose.ui.layout.LayoutCoordinates?>() }
     var transientSelectionCount by remember { mutableStateOf<Int?>(null) }
+    // The count the marquee ended with, shown until the selection itself has it: without it the
+    // count dropped to 0 for a frame or two and the selection bar started to leave and came back.
+    var settlingSelectionCount by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(settlingSelectionCount) {
+        val settling = settlingSelectionCount ?: return@LaunchedEffect
+        withTimeoutOrNull(SELECTION_SETTLE_MS) {
+            viewModel.uiState.first { it.selectionCount == settling }
+        }
+        settlingSelectionCount = null
+    }
     var showDelete by rememberSaveable { mutableStateOf(false) }
     var showRename by rememberSaveable { mutableStateOf(false) }
     var showRenameFolder by rememberSaveable { mutableStateOf(false) }
@@ -601,12 +612,33 @@ fun GalleryApp(
                 },
             )
             AlbumPickMode.RESTORE -> viewModel.restoreSelectedTrashToTree(uri)
+            AlbumPickMode.EXTRACT -> viewModel.extractArchiveToTree(uri)
         }
         viewModel.releaseHiddenPicker()
         albumPick = null
     }
 
     fun onPointerMove(window: Offset) {
+        if (externalDragStarted) return
+        if (inMultiWindow) {
+            // Into the other app: at once on one pane, or once the fingers leave Alexet's window
+            // while the panes can still take the files themselves.
+            val files = viewModel.externalDragFiles
+            val inApp = viewModel.uiState.value.dragKind == DragKind.FILES
+            val outside = window.x < 0f || window.y < 0f || window.x > rootView.width || window.y > rootView.height
+            if (files != null && (!inApp || outside) &&
+                startExternalFileDrag(rootView, files, dragAccent, dragOnAccent)
+            ) {
+                externalDragStarted = true
+                pointerWindow = Offset.Unspecified
+                // The drag in Alexet ends without a target: nothing moves here.
+                if (inApp) {
+                    viewModel.hoverAt()
+                    viewModel.endDrag()
+                }
+                return
+            }
+        }
         pointerWindow = window
         val state = viewModel.uiState.value
         when (state.dragKind) {
@@ -621,7 +653,9 @@ fun GalleryApp(
                     inRight && state.contentFolderId != AlbumIds.NONE ->
                         viewModel.hoverAt(albumId = state.contentFolderId)
                     else -> {
-                        val albumId = albumBounds.entries.firstOrNull { it.value.contains(window) }?.key
+                        val albumId = albumBounds.entries.firstOrNull { (_, layout) ->
+                            layout != null && layout.isAttached && layout.boundsInWindow().contains(window)
+                        }?.key
                             ?: AlbumIds.NONE
                         viewModel.hoverAt(albumId = albumId)
                     }
@@ -632,6 +666,11 @@ fun GalleryApp(
     }
 
     fun onPointerEnd() {
+        viewModel.clearExternalDrag()
+        if (externalDragStarted) {
+            externalDragStarted = false
+            return
+        }
         viewModel.endDrag { sender ->
             viewModel.requestWriteConsent(sender)
         }
@@ -788,7 +827,7 @@ fun GalleryApp(
                 inTrash = uiState.inTrash,
                 onRestore = viewModel::restoreSelectedTrash,
                 onRestoreTo = { albumPick = AlbumPickMode.RESTORE },
-                selectionCount = transientSelectionCount ?: uiState.selectionCount,
+                selectionCount = transientSelectionCount ?: settlingSelectionCount ?: uiState.selectionCount,
                 isMarqueeActive = transientSelectionCount != null,
                 totalCount = when {
                     uiState.selectedAlbumIds.isNotEmpty() && uiState.selectedFileIds.isEmpty() -> uiState.visibleAlbums.size
@@ -802,7 +841,7 @@ fun GalleryApp(
                 },
                 wide = wide,
                 activeBarActions = uiState.settings.activeBarActions(wide),
-                activeMenuActions = uiState.settings.activeMenuActions(wide),
+                menuCards = uiState.settings.menuCards(wide),
                 inFolder = uiState.phoneFolderId != AlbumIds.NONE || (wide && !expand),
                 sortSpec = uiState.settings.sortFor(uiState.sortTargetAlbumId),
                 folderSortOnly = uiState.settings.hasFolderSort(uiState.sortTargetAlbumId),
@@ -819,6 +858,18 @@ fun GalleryApp(
                 }?.let { it in uiState.settings.allFilesFolderIds },
                 allFilesGlobal = uiState.settings.showAllFiles,
                 onToggleAllFilesInFolder = { viewModel.toggleAllFilesFolder(uiState.sortTargetAlbumId) },
+                numberedFolder = uiState.sortTargetAlbumId in uiState.settings.numberedFolderIds,
+                // A real folder on disk only: not the trash, favourites or a private folder.
+                onToggleNumbering = uiState.sortTargetAlbumId.takeIf {
+                    it != AlbumIds.NONE && it != AlbumIds.TRASH && it != AlbumIds.FAVORITES &&
+                        uiState.allAlbums.firstOrNull { album -> album.id == it }?.isSecure != true
+                }?.let { id ->
+                    {
+                        viewModel.toggleFolderNumbering(id) { sender ->
+                            viewModel.requestWriteConsent(sender)
+                        }
+                    }
+                },
                 onStripPriority = {
                     viewModel.stripTildePriority { sender ->
                         viewModel.requestWriteConsent(sender)
@@ -884,8 +935,11 @@ fun GalleryApp(
                 onEdit = run {
                     val selectedVideos = uiState.selectedFiles.filter { it.isVideo }
                     val selectedPhotos = uiState.selectedFiles.filter { !it.isVideo }
-                    val canEdit = (selectedVideos.isNotEmpty() && selectedPhotos.isEmpty() && uiState.selectedAlbumIds.isEmpty()) ||
-                        (selectedPhotos.size == 1 && selectedVideos.isEmpty() && uiState.selectedAlbumIds.isEmpty())
+                    // Other files (apk, pdf...) have no editor.
+                    val canEdit = uiState.selectedFiles.none { it.isOtherFile } && (
+                        (selectedVideos.isNotEmpty() && selectedPhotos.isEmpty() && uiState.selectedAlbumIds.isEmpty()) ||
+                            (selectedPhotos.isNotEmpty() && selectedVideos.isEmpty() && uiState.selectedAlbumIds.isEmpty())
+                        )
                     if (canEdit) {
                         {
                             if (selectedVideos.isNotEmpty()) {
@@ -893,6 +947,10 @@ fun GalleryApp(
                                 viewModel.clearSelection()
                             } else if (selectedPhotos.size == 1) {
                                 viewModel.openEditor(selectedPhotos.first())
+                                viewModel.clearSelection()
+                            } else {
+                                // Several photos: laid out into a mosaic.
+                                viewModel.openMosaic(selectedPhotos)
                                 viewModel.clearSelection()
                             }
                         }
@@ -1015,10 +1073,18 @@ fun GalleryApp(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        LoadingIndicator(
-                            modifier = Modifier.size(20.dp),
-                            color = MaterialTheme.colorScheme.primary,
-                        )
+                        if (LocalLightMode.current) {
+                            // Light mode: a plain spinner instead of the morphing shapes.
+                            androidx.compose.material3.CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        } else {
+                            LoadingIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
                         val scan = fullScan
                         Text(
                             text = when {
@@ -1062,6 +1128,7 @@ fun GalleryApp(
                     // AI search open with nothing typed: its folders shine.
                     CompositionLocalProvider(
                         LocalActiveDownloads provides activeDownloads,
+                        LocalExternalFileDrag provides inMultiWindow,
                         dev.ander.alexet.ui.components.aiglow.LocalAiGlint provides dev.ander.alexet.ui.components.aiglow.rememberAiGlint(
                             uiState.settings.aiEffects,
                             active = uiState.showingSmartFolders,
@@ -1073,7 +1140,7 @@ fun GalleryApp(
                             isBook = isBook,
                             foldSplitTarget = foldSplitTarget,
                             folderGridState = folderGridState,
-                            onAlbumBounds = { id, rect -> albumBounds[id] = rect },
+                            onAlbumBounds = { id, layout -> albumBounds[id] = layout },
                             onRightPaneBounds = { rightPaneBounds = it },
                             onFolderClick = {
                                 focusManager.clearFocus(force = true)
@@ -1090,12 +1157,17 @@ fun GalleryApp(
                             onOpenMedia = {
                                 focusManager.clearFocus(force = true)
                                 keyboardController?.hide()
-                                viewModel.openMedia(it)
+                                // A video gets here only by the double tap: "Player like an external app" opens it as the player.
+                                viewModel.openMedia(it, asPlayer = uiState.settings.playerLikeExternal)
                             },
                             onPlayVideo = {
                                 focusManager.clearFocus(force = true)
                                 keyboardController?.hide()
-                                viewModel.playExternally(context, it)
+                                // "Videos only in Alexet": its own player, never another app.
+                                // "Player like an external app": Alexet's player opens in player mode.
+                                val asPlayer = uiState.settings.playerLikeExternal
+                                if (uiState.settings.videosOnlyInAlexet) viewModel.openMedia(it, asPlayer = asPlayer)
+                                else viewModel.playExternally(context, it, asPlayer = asPlayer)
                             },
                             onToggleSelect = viewModel::toggleFileSelected,
                             onMarqueeFiles = viewModel::setFileSelection,
@@ -1104,7 +1176,11 @@ fun GalleryApp(
                             onClosePane = viewModel::closeOpenFolder,
                             onHitboxSelect = viewModel::selectHitbox,
                             onTwoFingerStart = { albumId, offset ->
-                                viewModel.startFilesDrag(albumId)
+                                externalDragStarted = false
+                                // Split screen: the selection gets ready to be dropped into the other app.
+                                if (inMultiWindow) viewModel.prepareExternalDrag(context)
+                                // Moving between folders needs the panes; on one pane only the other app takes the files.
+                                if (wide) viewModel.startFilesDrag(albumId)
                                 onPointerMove(offset)
                             },
                             onTwoFingerDrag = ::onPointerMove,
@@ -1116,7 +1192,10 @@ fun GalleryApp(
                             onGetFolderGridState = { id -> getOrCreateFolderGridState(id, viewModel.getFolderScroll(id)) },
                             onContentOrderMove = viewModel::moveContentOrder,
                             onDecryptFolder = { albumToDecrypt = it },
-                            onTransientCountChange = { transientSelectionCount = it },
+                            onTransientCountChange = { count ->
+                                if (count == null) settlingSelectionCount = transientSelectionCount
+                                transientSelectionCount = count
+                            },
                         )
                     }
                 }
@@ -1161,10 +1240,12 @@ fun GalleryApp(
                     .padding(horizontal = 16.dp, vertical = 16.dp)
                     .zIndex(90f),
             ) {
+                // A numbered folder always takes the new order into its names.
+                val numberedHere = uiState.contentOrderFolderId in uiState.settings.numberedFolderIds
                 ContentOrderBottomBar(
-                    renameNumeric = uiState.contentOrderRenameNumeric,
+                    renameNumeric = uiState.contentOrderRenameNumeric || numberedHere,
                     isAnonymous = uiState.contentOrderFolderId in uiState.settings.anonymousFolderIds,
-                    onRenameNumericChange = viewModel::setContentOrderRenameNumeric,
+                    onRenameNumericChange = { if (!numberedHere) viewModel.setContentOrderRenameNumeric(it) },
                     onSave = {
                         viewModel.confirmContentOrder { sender ->
                             viewModel.requestWriteConsent(sender)
@@ -1310,8 +1391,11 @@ fun GalleryApp(
     }
         var lastViewer by remember { mutableStateOf<GalleryMedia?>(null) }
     var lastViewerList by remember { mutableStateOf<List<GalleryMedia>>(emptyList()) }
+    // Kept while the viewer fades out, like its list.
+    var lastViewerAsPlayer by remember { mutableStateOf(false) }
     if (viewer != null) {
         lastViewer = viewer
+        lastViewerAsPlayer = uiState.viewerAsPlayer
         val currentList = uiState.currentViewerList()
         if (currentList.isNotEmpty()) {
             lastViewerList = currentList
@@ -1365,6 +1449,9 @@ fun GalleryApp(
                 allMedia = uiState.allCandidateMedia,
                 onStripExif = { media -> viewModel.stripExif(listOf(media)) },
                 playerConfig = uiState.settings.playerConfig,
+                playerMode = if (viewer != null) uiState.viewerAsPlayer else lastViewerAsPlayer,
+                rememberPlayerState = uiState.settings.playerLikeExternal,
+                onUpdatePlayerConfig = viewModel::updatePlayerConfig,
                 modifier = Modifier.fillMaxSize().blockTouchesBelow(),
             )
         }
@@ -1740,6 +1827,45 @@ fun GalleryApp(
             },
         )
     }
+    val mosaicSources by viewModel.mosaic.collectAsState()
+    val mosaicSaving by viewModel.mosaicSaving.collectAsState()
+    mosaicSources?.let { sources ->
+        MosaicEditorPane(
+            sources = sources,
+            saving = mosaicSaving,
+            onCancel = viewModel::closeMosaic,
+            onDone = viewModel::saveMosaic,
+        )
+    }
+    archiveBrowser?.let { archive ->
+        if (uiState.viewerMediaId == null) {
+            ArchiveBrowserDialog(
+                state = archive,
+                onNavigate = viewModel::archiveNavigate,
+                onOpenEntry = viewModel::openArchiveEntry,
+                onOpenOutside = viewModel::openArchiveOutside,
+                onUnpack = { albumPick = AlbumPickMode.EXTRACT },
+                onCancelExtract = viewModel::cancelArchiveExtract,
+                onBack = viewModel::archiveBack,
+                onClose = viewModel::closeArchive,
+            )
+        }
+    }
+    // The name of a new folder the archive is unpacked into.
+    var unpackFolderName by remember { mutableStateOf<String?>(null) }
+    unpackFolderName?.let { initial ->
+        RenameFolderDialog(
+            currentName = initial,
+            title = stringResource(R.string.new_folder),
+            confirmLabel = stringResource(R.string.archive_unpack),
+            note = stringResource(R.string.archive_new_folder_note),
+            onConfirm = { name ->
+                unpackFolderName = null
+                viewModel.extractArchiveToNewFolder(name)
+            },
+            onDismiss = { unpackFolderName = null },
+        )
+    }
     albumPick?.let { mode ->
         AlbumPickerDialog(
             albums = uiState.albums,
@@ -1758,6 +1884,7 @@ fun GalleryApp(
                             viewModel.requestWriteConsent(sender)
                         }
                         AlbumPickMode.RESTORE -> viewModel.restoreSelectedTrashTo(id)
+                        AlbumPickMode.EXTRACT -> viewModel.extractArchiveToAlbum(id)
                     }
                 }
                 viewModel.releaseHiddenPicker()
@@ -1779,6 +1906,15 @@ fun GalleryApp(
             onDismiss = {
                 viewModel.releaseHiddenPicker()
                 albumPick = null
+            },
+            onNewFolder = if (mode == AlbumPickMode.EXTRACT) {
+                {
+                    viewModel.releaseHiddenPicker()
+                    albumPick = null
+                    unpackFolderName = viewModel.archiveFolderName()
+                }
+            } else {
+                null
             },
         )
     }
@@ -1864,6 +2000,7 @@ fun GalleryApp(
                 onMultiFolderMemory = viewModel::setMultiFolderMemory,
                 onPanelSplitPercent = viewModel::setPanelSplitPercent,
                 onAutoFoldSplitEnabled = viewModel::setAutoFoldSplitEnabled,
+                onFoldShowsFolders = viewModel::setFoldShowsFolders,
                 onDynamicSplit = viewModel::setDynamicSplit,
                 onFoldSplitAngleThreshold = viewModel::setFoldSplitAngleThreshold,
                 onShowFoldableSettings = viewModel::setShowFoldableSettings,
@@ -1884,6 +2021,8 @@ fun GalleryApp(
                 onToggleSelectionActionVisibility = viewModel::toggleSelectionActionVisibility,
                 onSearchFilesFullScreen = viewModel::setSearchFilesFullScreen,
                 onVideoDoubleClickToGallery = viewModel::setVideoDoubleClickToGallery,
+                onVideosOnlyInAlexet = viewModel::setVideosOnlyInAlexet,
+                onPlayerLikeExternal = viewModel::setPlayerLikeExternal,
                 onRememberFolderScrollAcrossSessions = viewModel::setRememberFolderScrollAcrossSessions,
                 onNewContentScrollsToTop = viewModel::setNewContentScrollsToTop,
                 onAutoplayGifs = viewModel::setAutoplayGifs,
@@ -1932,7 +2071,7 @@ private fun GalleryBody(
     isBook: Boolean = false,
     foldSplitTarget: Float = 0.5f,
     folderGridState: LazyGridState,
-    onAlbumBounds: (Long, Rect) -> Unit,
+    onAlbumBounds: (Long, androidx.compose.ui.layout.LayoutCoordinates?) -> Unit,
     onRightPaneBounds: (Rect) -> Unit,
     onFolderClick: (Long) -> Unit,
     onStamp: (Long) -> Unit,
@@ -2034,12 +2173,13 @@ private fun GalleryBody(
                     onToggleSelect = onToggleSelect,
                     onMarqueeSelect = onMarqueeFiles,
                     onTransientCountChange = onTransientCountChange,
-                    twoFingerDragEnabled = false,
-                    onTwoFingerStart = {},
-                    onTwoFingerDrag = {},
-                    onTwoFingerEnd = {},
+                    // Split screen: two fingers drag the selection into the other app.
+                    twoFingerDragEnabled = LocalExternalFileDrag.current,
+                    onTwoFingerStart = { onTwoFingerStart(AlbumIds.NONE, it) },
+                    onTwoFingerDrag = onTwoFingerDrag,
+                    onTwoFingerEnd = onTwoFingerEnd,
                     linearMarquee = uiState.settings.fileSelectMode == FileSelectMode.LINEAR,
-                    videoDoubleClickToGallery = uiState.settings.videoDoubleClickToGallery,
+                    videoDoubleClickToGallery = uiState.settings.videoDoubleClickToGallery && !uiState.settings.videosOnlyInAlexet,
                     isLoading = uiState.isLoading,
                     scrollerOnRight = uiState.settings.scrollerOnRight,
                     scrollerEnabled = uiState.settings.scrollerEnabled,
@@ -2080,12 +2220,14 @@ private fun GalleryBody(
                             onToggleSelect = onToggleSelect,
                             onMarqueeSelect = onMarqueeFiles,
                             onTransientCountChange = onTransientCountChange,
-                            twoFingerDragEnabled = false,
-                            onTwoFingerStart = {},
-                            onTwoFingerDrag = {},
-                            onTwoFingerEnd = {},
+                            // Split screen: two fingers drag the selection into the other app.
+                            twoFingerDragEnabled = LocalExternalFileDrag.current &&
+                                !(uiState.contentOrderMode && uiState.contentOrderFolderId == folderId),
+                            onTwoFingerStart = { onTwoFingerStart(folderId, it) },
+                            onTwoFingerDrag = onTwoFingerDrag,
+                            onTwoFingerEnd = onTwoFingerEnd,
                             linearMarquee = uiState.settings.fileSelectMode == FileSelectMode.LINEAR,
-                            videoDoubleClickToGallery = uiState.settings.videoDoubleClickToGallery,
+                            videoDoubleClickToGallery = uiState.settings.videoDoubleClickToGallery && !uiState.settings.videosOnlyInAlexet,
                             albumId = folderId,
                             gridState = onGetFolderGridState(folderId),
                             initialScrollPos = onGetFolderScroll(folderId),
@@ -2570,10 +2712,18 @@ private fun AlexetColdStartLoader() {
         contentAlignment = Alignment.Center,
     ) {
         // ContainedLoadingIndicator was invisible on black/dynamic dark — morphing LoadingIndicator instead.
-        LoadingIndicator(
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(80.dp),
-        )
+        if (LocalLightMode.current) {
+            // Light mode: a plain spinner instead of the morphing shapes.
+            androidx.compose.material3.CircularProgressIndicator(
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(80.dp),
+            )
+        } else {
+            LoadingIndicator(
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(80.dp),
+            )
+        }
     }
 }
 

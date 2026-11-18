@@ -36,6 +36,7 @@ enum class PlayerShortcut {
             LOOP,
             LOCK_CONTROLS,
             VIDEO_CONTENT_SCALE,
+            PLAY_IN_BACKGROUND,
         )
 
         fun fromName(name: String): PlayerShortcut? = try {
@@ -68,6 +69,14 @@ data class AnderLineConfig(
     val enableDoubleTapSeek: Boolean = true,
     val sponsorBlockEnabled: Boolean = true,
     val sponsorBlockAutoSkip: Set<SponsorBlockCategory> = SponsorBlockCategory.DEFAULT_AUTO_SKIP,
+    /** Where prev / play / next sit on the screen, 0..1 of its width / height (centre by default). */
+    val controlButtonsX: Float = 0.5f,
+    val controlButtonsY: Float = 0.5f,
+    /** "Player like an external app" with remembered state: kept for every video. */
+    val rememberedSpeed: Float = 1f,
+    val rememberedLoop: Boolean = false,
+    /** A VideoContentScale name. */
+    val rememberedContentScale: String = "FIT",
 )
 
 object AnderLineClient {
@@ -145,8 +154,17 @@ object AnderLineClient {
             put("sponsorBlockEnabled", config.sponsorBlockEnabled)
             put("sponsorBlockAutoSkip", JSONArray(config.sponsorBlockAutoSkip.map { it.key }))
             put("visibleShortcuts", JSONArray(config.visibleShortcuts.map { it.name }))
+            // The background play switch was added to saved lists once; after that it's the user's choice.
+            put(KEY_BACKGROUND_SHORTCUT_ADDED, true)
+            put("controlButtonsX", config.controlButtonsX.toDouble())
+            put("controlButtonsY", config.controlButtonsY.toDouble())
+            put("alexetPlaybackSpeed", config.rememberedSpeed.toDouble())
+            put("alexetLoop", config.rememberedLoop)
+            put("alexetContentScale", config.rememberedContentScale)
         })
     }
+
+    private const val KEY_BACKGROUND_SHORTCUT_ADDED = "alexetBackgroundShortcut"
 
     /** [fallback] gives each value the file does not carry (a settings import keeps the current ones). */
     fun parseConfig(jsonStr: String, fallback: AnderLineConfig = AnderLineConfig()): AnderLineConfig {
@@ -179,6 +197,15 @@ object AnderLineClient {
                 (0 until array.length()).mapNotNull { SponsorBlockCategory.fromName(array.optString(it)) }.toSet()
             } ?: f.sponsorBlockAutoSkip
 
+            val buttonsX = playerObj.optDouble("controlButtonsX", root.optDouble("controlButtonsX", f.controlButtonsX.toDouble()))
+                .toFloat().coerceButtonPosition()
+            val buttonsY = playerObj.optDouble("controlButtonsY", root.optDouble("controlButtonsY", f.controlButtonsY.toDouble()))
+                .toFloat().coerceButtonPosition()
+            val rememberedSpeed = playerObj.optDouble("alexetPlaybackSpeed", root.optDouble("alexetPlaybackSpeed", f.rememberedSpeed.toDouble()))
+                .toFloat().let { if (it.isNaN()) 1f else it.coerceIn(0.25f, 3f) }
+            val rememberedLoop = playerObj.optBoolean("alexetLoop", root.optBoolean("alexetLoop", f.rememberedLoop))
+            val rememberedScale = playerObj.optString("alexetContentScale", root.optString("alexetContentScale", f.rememberedContentScale))
+
             val shortcuts = mutableSetOf<PlayerShortcut>()
             val array = playerObj.optJSONArray("visibleShortcuts") ?: root.optJSONArray("visibleShortcuts")
             if (array != null) {
@@ -186,6 +213,10 @@ object AnderLineClient {
                     val sName = array.optString(i)
                     PlayerShortcut.fromName(sName)?.let { shortcuts.add(it) }
                 }
+            }
+            // A list saved before the background play switch existed gets it once, at the end.
+            if (array != null && !playerObj.has(KEY_BACKGROUND_SHORTCUT_ADDED) && !root.has(KEY_BACKGROUND_SHORTCUT_ADDED)) {
+                shortcuts.add(PlayerShortcut.PLAY_IN_BACKGROUND)
             }
             // No list at all -> defaults; an empty list is a choice ("show none") and stays empty.
             val finalShortcuts = if (array != null) shortcuts else f.visibleShortcuts
@@ -210,12 +241,20 @@ object AnderLineClient {
                 enableDoubleTapSeek = doubleTapSeek,
                 sponsorBlockEnabled = sponsorBlock,
                 sponsorBlockAutoSkip = autoSkip,
+                controlButtonsX = buttonsX,
+                controlButtonsY = buttonsY,
+                rememberedSpeed = rememberedSpeed,
+                rememberedLoop = rememberedLoop,
+                rememberedContentScale = rememberedScale,
             )
         } catch (_: Exception) {
             fallback
         }
     }
 }
+
+/** Keeps the playback buttons on screen (a NaN from a broken file goes to the centre). */
+internal fun Float.coerceButtonPosition(): Float = if (isNaN()) 0.5f else coerceIn(0.05f, 0.95f)
 
 @Composable
 fun rememberAnderLineConfig(): AnderLineConfig {

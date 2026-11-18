@@ -168,6 +168,13 @@ fun rememberEffectStrength(config: AiEffectsConfig, effect: AiEffect, active: Bo
 }
 
 /**
+ * One renderer for the halos: building one compiles its shader, and the cache of a halo is
+ * rebuilt often (new modifier, new size). Uniforms are set before each draw, so sharing it is
+ * safe, as for the folder glint.
+ */
+internal val sharedHaloRenderer: AiGlowRenderer by lazy { AiGlowRenderer() }
+
+/**
  * A ring with a soft halo just outside this element's rounded shape, its colors circling.
  * Drawn behind the content and outside the bounds (a clipping parent cuts the halo).
  */
@@ -179,8 +186,8 @@ fun Modifier.aiGlowHalo(
     strength: () -> Float,
     glow: Dp = 14.dp,
     stroke: Dp = 2.dp,
+    renderer: AiGlowRenderer = sharedHaloRenderer,
 ): Modifier = drawWithCache {
-    val renderer = AiGlowRenderer()
     val radiusPx = cornerRadius.toPx()
     val glowPx = glow.toPx() * style.width
     val strokePx = stroke.toPx() * style.width.coerceIn(0.75f, 1.5f)
@@ -204,8 +211,8 @@ fun Modifier.aiGlowHaloAround(
     strength: () -> Float,
     glow: Dp = 14.dp,
     stroke: Dp = 2.dp,
+    renderer: AiGlowRenderer = sharedHaloRenderer,
 ): Modifier = drawWithCache {
-    val renderer = AiGlowRenderer()
     val radiusPx = cornerRadius.toPx()
     val glowPx = glow.toPx() * style.width
     val strokePx = stroke.toPx() * style.width.coerceIn(0.75f, 1.5f)
@@ -234,9 +241,10 @@ fun AiEdgeGlow(
     val style = config.style(AiEffect.RESULTS_EDGE)
     if (!style.enabled) return
     val colors = aiColors(config, AiEffect.RESULTS_EDGE)
-    val phase = rememberAiPhase(style.speed)
     val strength by if (loop) rememberLoopingGlow(style.durationMs) else rememberTimedGlow(trigger, style.durationMs)
     if (strength <= 0f) return
+    // After the check: its frame loop runs only while the glow shows.
+    val phase = rememberAiPhase(style.speed)
     val renderer = remember { AiGlowRenderer() }
     val view = LocalView.current
     var screenCorners by remember { mutableStateOf<AiCorners?>(null) }

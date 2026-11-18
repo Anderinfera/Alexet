@@ -70,6 +70,25 @@ class DuplicateFinderTest {
     }
 
     @Test
+    fun smallFilesAreGroupedByTheirWholeBytes() = runBlocking {
+        val small = bytes(3, 1000)
+        val piece = 64 * 1024
+        // Listed as one piece, but longer on disk (a stale size): the rest must still count.
+        val longer = bytes(5, piece + 10)
+        val longerOther = longer.copyOf().also { it[piece + 5] = (it[piece + 5] + 1).toByte() }
+        val files = listOf(
+            media(1, 1000), media(2, 1000), media(3, 1000),
+            media(4, piece.toLong()), media(5, piece.toLong()), media(6, piece.toLong()),
+        )
+        val data = mapOf(
+            1L to small, 2L to bytes(4, 1000), 3L to small.copyOf(),
+            4L to longer, 5L to longerOther, 6L to longer.copyOf(),
+        )
+        val groups = DuplicateFinder.identicalGroups(files, { ByteArrayInputStream(data.getValue(it.id)) }) {}
+        assertEquals(listOf(listOf(1L, 3L), listOf(4L, 6L)), groups.map { g -> g.map { it.id } })
+    }
+
+    @Test
     fun unreadableFilesAreNeverReportedAsTheSame() = runBlocking {
         val files = listOf(media(1, 10), media(2, 10))
         val groups = DuplicateFinder.identicalGroups(files, { null }) {}

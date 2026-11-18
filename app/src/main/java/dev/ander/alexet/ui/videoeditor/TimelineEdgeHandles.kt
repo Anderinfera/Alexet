@@ -28,6 +28,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import dev.ander.alexet.ui.components.LocalLightMode
 import kotlin.math.PI
 import kotlin.math.sin
 
@@ -165,7 +166,11 @@ private fun EdgeHandle(
 /** No room for a handle between two items: a vertical wave (like a loading indicator) in the gap. */
 @Composable
 private fun EdgeWave(centerDp: Dp, gapDp: Dp, color: Color) {
-    val width = maxOf(gapDp, WAVE_MIN_WIDTH)
+    if (LocalLightMode.current) {
+        // Light mode: drawn once, standing still.
+        EdgeWaveCanvas(centerDp, gapDp, color) { 0f }
+        return
+    }
     val transition = rememberInfiniteTransition(label = "edgeWave")
     val phase by transition.animateFloat(
         initialValue = 0f,
@@ -173,6 +178,13 @@ private fun EdgeWave(centerDp: Dp, gapDp: Dp, color: Color) {
         animationSpec = infiniteRepeatable(tween(durationMillis = 900, easing = LinearEasing)),
         label = "edgeWavePhase",
     )
+    EdgeWaveCanvas(centerDp, gapDp, color) { phase }
+}
+
+/** [phase] is read while drawing, so only the drawing follows the animation. */
+@Composable
+private fun EdgeWaveCanvas(centerDp: Dp, gapDp: Dp, color: Color, phase: () -> Float) {
+    val width = maxOf(gapDp, WAVE_MIN_WIDTH)
     Canvas(
         modifier = Modifier
             .offset(x = centerDp - width / 2)
@@ -183,10 +195,11 @@ private fun EdgeWave(centerDp: Dp, gapDp: Dp, color: Color) {
         val amplitude = size.width * 0.3f
         val cx = size.width / 2f
         val steps = 24
+        val shift = phase()
         val path = Path()
         for (i in 0..steps) {
             val y = size.height * i / steps
-            val x = cx + amplitude * sin(phase + (y / size.height) * 4f * PI.toFloat())
+            val x = cx + amplitude * sin(shift + (y / size.height) * 4f * PI.toFloat())
             if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
         drawPath(path, color, style = Stroke(width = 2.dp.toPx()))

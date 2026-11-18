@@ -5,8 +5,19 @@ import dev.ander.alexet.ui.components.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.snap
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import kotlin.math.abs
+import kotlinx.coroutines.launch
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -29,7 +40,9 @@ import androidx.compose.ui.draw.drawWithContent
 import dev.ander.alexet.ui.components.aiglow.aiColors
 import dev.ander.alexet.ui.components.aiglow.aiGlowHaloAround
 import dev.ander.alexet.ui.components.aiglow.rememberEffectStrength
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import dev.ander.alexet.ui.components.aiglow.rememberAiPhase
@@ -42,6 +55,11 @@ import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material.icons.rounded.FormatListNumbered
+import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.Tag
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Info
@@ -156,7 +174,8 @@ fun AlexetTopBar(
     totalCount: Int = 0,
     wide: Boolean = false,
     activeBarActions: List<SelectionAction> = emptyList(),
-    activeMenuActions: List<SelectionAction> = emptyList(),
+    /** The selection menu's cards (swiped through sideways); the first one opens. */
+    menuCards: List<List<SelectionAction>> = emptyList(),
     inFolder: Boolean = false,
     sortSpec: SortSpec = SortSpec(),
     folderSortOnly: Boolean = false,
@@ -196,6 +215,9 @@ fun AlexetTopBar(
     allFilesInFolder: Boolean? = null,
     allFilesGlobal: Boolean = false,
     onToggleAllFilesInFolder: (() -> Unit)? = null,
+    /** Folder settings → Numbering of the open folder's file names. */
+    numberedFolder: Boolean = false,
+    onToggleNumbering: (() -> Unit)? = null,
     /** In an open folder: its info (path, files, size, dates). */
     onFolderInfo: (() -> Unit)? = null,
 ) {
@@ -229,7 +251,7 @@ fun AlexetTopBar(
                 totalCount = totalCount,
                 wide = wide,
                 activeBarActions = activeBarActions,
-                activeMenuActions = activeMenuActions,
+                menuCards = menuCards,
                 hasSelectedFolders = hasSelectedFolders,
                 inTrash = inTrash,
                 onClear = onUp,
@@ -294,6 +316,8 @@ fun AlexetTopBar(
                 allFilesInFolder = allFilesInFolder,
                 allFilesGlobal = allFilesGlobal,
                 onToggleAllFilesInFolder = onToggleAllFilesInFolder,
+                numberedFolder = numberedFolder,
+                onToggleNumbering = onToggleNumbering,
                 onFolderInfo = onFolderInfo,
             )
         }
@@ -347,24 +371,33 @@ private fun NormalTopBar(
     allFilesInFolder: Boolean? = null,
     allFilesGlobal: Boolean = false,
     onToggleAllFilesInFolder: (() -> Unit)? = null,
+    numberedFolder: Boolean = false,
+    onToggleNumbering: (() -> Unit)? = null,
 ) {
     val smart = searchMode == SearchMode.SMART
     val fieldStyle = aiEffects.style(dev.ander.alexet.data.AiEffect.SEARCH_FIELD)
-    val glowStrength by rememberEffectStrength(aiEffects, dev.ander.alexet.data.AiEffect.SEARCH_FIELD, searching && smart, aiTrigger)
+    val glowStrength = rememberEffectStrength(aiEffects, dev.ander.alexet.data.AiEffect.SEARCH_FIELD, searching && smart, aiTrigger)
+    // Composition follows only on/off; the fade itself is read when drawing.
+    val glowOn by remember(glowStrength) { androidx.compose.runtime.derivedStateOf { glowStrength.value > 0f } }
     // The field's place in the bar: its halo is drawn by the bar's box, over the bar, so neither
     // the title's animation nor the bar's own bounds cut it.
     var barOrigin by remember { mutableStateOf(Offset.Zero) }
     var fieldBounds by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
-    val haloModifier = if (glowStrength > 0f) {
-        Modifier.aiGlowHaloAround(
-            target = { fieldBounds?.translate(-barOrigin) },
-            colors = aiColors(aiEffects, dev.ander.alexet.data.AiEffect.SEARCH_FIELD),
-            style = fieldStyle,
-            cornerRadius = AI_FIELD_RADIUS,
-            phase = rememberAiPhase(fieldStyle.speed),
-            strength = { glowStrength },
-            glow = 12.dp,
-        )
+    val haloModifier = if (glowOn) {
+        val haloColors = aiColors(aiEffects, dev.ander.alexet.data.AiEffect.SEARCH_FIELD)
+        val haloPhase = rememberAiPhase(fieldStyle.speed)
+        // Kept across keystrokes: a new modifier rebuilt the halo's draw cache.
+        remember(haloColors, fieldStyle, haloPhase, glowStrength) {
+            Modifier.aiGlowHaloAround(
+                target = { fieldBounds?.translate(-barOrigin) },
+                colors = haloColors,
+                style = fieldStyle,
+                cornerRadius = AI_FIELD_RADIUS,
+                phase = haloPhase,
+                strength = { glowStrength.value },
+                glow = 12.dp,
+            )
+        }
     } else {
         Modifier
     }
@@ -556,6 +589,8 @@ private fun NormalTopBar(
                         allFilesInFolder = allFilesInFolder,
                         allFilesGlobal = allFilesGlobal,
                         onToggleAllFilesInFolder = onToggleAllFilesInFolder,
+                        numbered = numberedFolder,
+                        onToggleNumbering = onToggleNumbering,
                     )
                 }
                 if (!inTrash && ((!inFolder && !showUp) || wide)) {
@@ -685,7 +720,7 @@ private fun SelectionTopBar(
     wide: Boolean,
     isMarqueeActive: Boolean = false,
     activeBarActions: List<SelectionAction>,
-    activeMenuActions: List<SelectionAction>,
+    menuCards: List<List<SelectionAction>>,
     hasSelectedFolders: Boolean,
     inTrash: Boolean = false,
     onClear: () -> Unit,
@@ -714,6 +749,7 @@ private fun SelectionTopBar(
     onSetPrivate: (() -> Unit)? = null,
 ) {
     var menu by remember { mutableStateOf(false) }
+    var menuCard by remember { mutableIntStateOf(0) }
     val safeCount = count.coerceAtLeast(1)
     TopAppBar(
         title = {
@@ -762,7 +798,7 @@ private fun SelectionTopBar(
                     Icon(Icons.AutoMirrored.Outlined.DriveFileMove, contentDescription = stringResource(R.string.restore_to))
                 }
             } else {
-                val barActions = activeBarActions.filter { action ->
+                val isAvailable = { action: SelectionAction ->
                     when (action) {
                         SelectionAction.EDIT -> onEdit != null
                         SelectionAction.QUICK_EDIT -> onQuickEdit != null
@@ -773,18 +809,9 @@ private fun SelectionTopBar(
                         else -> true
                     }
                 }
-                val menuActions = activeMenuActions.filter { action ->
-                    when (action) {
-                        SelectionAction.EDIT -> onEdit != null
-                        SelectionAction.QUICK_EDIT -> onQuickEdit != null
-                        SelectionAction.SET_AS -> count == 1 && !hasSelectedFolders
-                        SelectionAction.CONTENT_ORDER -> !hasSelectedFolders
-                        SelectionAction.RENAME -> !hasSelectedFolders || count == 1
-                        SelectionAction.SET_PRIVATE -> hasSelectedFolders && onSetPrivate != null
-                        else -> true
-                    }
-                }
-                val needsOverflow = menuActions.isNotEmpty() || hasSelectedFolders
+                val barActions = activeBarActions.filter(isAvailable)
+                val cards = menuCards.map { card -> card.filter(isAvailable) }
+                val needsOverflow = cards.any { it.isNotEmpty() } || hasSelectedFolders
 
                 @Composable
                 fun ActionIcon(action: SelectionAction) {
@@ -974,29 +1001,39 @@ private fun SelectionTopBar(
                     ActionIcon(action)
                 }
 
-                if (needsOverflow || hasSelectedFolders) {
-                    BoxMenu(expanded = menu, onDismiss = { menu = false }, onOpen = { menu = true }) {
-                        menuActions.forEach { action ->
-                            ActionMenuItem(action)
-                        }
-                        if (hasSelectedFolders) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.folder_order)) },
-                                onClick = {
-                                    menu = false
-                                    onFolderOrder()
-                                },
-                                leadingIcon = { Icon(Icons.Rounded.SwapVert, contentDescription = null) },
-                            )
-                        }
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.refresh_view)) },
-                            onClick = {
-                                menu = false
-                                onRefresh()
+                if (needsOverflow) {
+                    // Every opening starts on the first card.
+                    BoxMenu(expanded = menu, onDismiss = { menu = false }, onOpen = { menuCard = 0; menu = true }) {
+                        SwipeMenuCards(
+                            cardCount = cards.size,
+                            cardIndex = menuCard.coerceIn(0, (cards.size - 1).coerceAtLeast(0)),
+                            onCardChange = { menuCard = it },
+                            card = { index ->
+                                cards.getOrNull(index)?.forEach { action ->
+                                    ActionMenuItem(action)
+                                }
                             },
-                            leadingIcon = { Icon(Icons.Rounded.Refresh, contentDescription = null) },
+                            footer = {
+                                if (hasSelectedFolders) {
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.folder_order)) },
+                                        onClick = {
+                                            menu = false
+                                            onFolderOrder()
+                                        },
+                                        leadingIcon = { Icon(Icons.Rounded.SwapVert, contentDescription = null) },
+                                    )
+                                }
+                                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.refresh_view)) },
+                                    onClick = {
+                                        menu = false
+                                        onRefresh()
+                                    },
+                                    leadingIcon = { Icon(Icons.Rounded.Refresh, contentDescription = null) },
+                                )
+                            },
                         )
                     }
                 }
@@ -1025,9 +1062,29 @@ private fun FolderOverflow(
     allFilesInFolder: Boolean? = null,
     allFilesGlobal: Boolean = false,
     onToggleAllFilesInFolder: (() -> Unit)? = null,
+    numbered: Boolean = false,
+    onToggleNumbering: (() -> Unit)? = null,
 ) {
     var menu by remember { mutableStateOf(false) }
     var showSortDialog by remember { mutableStateOf(false) }
+    var showFolderSettings by remember { mutableStateOf(false) }
+
+    if (showFolderSettings) {
+        FolderSettingsDialog(
+            numbered = numbered,
+            numberingBlocked = isAnonymousFolder,
+            onSort = {
+                showFolderSettings = false
+                showSortDialog = true
+            },
+            onContentOrder = {
+                showFolderSettings = false
+                onContentOrder()
+            },
+            onToggleNumbering = onToggleNumbering,
+            onDismiss = { showFolderSettings = false },
+        )
+    }
 
     if (showSortDialog) {
         SortDialog(
@@ -1045,50 +1102,34 @@ private fun FolderOverflow(
         onDismiss = { menu = false },
         onOpen = { menu = true },
     ) {
+        // Sorting, the hand-made order and the numbering, together.
         DropdownMenuItem(
-            text = { Text(stringResource(R.string.sort_action)) },
+            text = { Text(stringResource(R.string.folder_settings)) },
             onClick = {
                 menu = false
-                showSortDialog = true
+                showFolderSettings = true
             },
-            leadingIcon = { Icon(Icons.Rounded.SwapVert, contentDescription = null) },
+            leadingIcon = { Icon(Icons.Rounded.Tune, contentDescription = null) },
         )
-        DropdownMenuItem(
-            text = { Text(stringResource(R.string.content_order_action)) },
-            onClick = {
-                menu = false
-                onContentOrder()
-            },
-            leadingIcon = { Icon(Icons.Rounded.FormatListNumbered, contentDescription = null) },
-        )
-        if (allFilesInFolder != null && onToggleAllFilesInFolder != null) {
-            // Kept for this folder until switched back; on everywhere from the settings switch.
+        // Kept for this folder until switched back. With all files shown everywhere (the settings
+        // switch) there is nothing to switch here, so the item is not shown.
+        if (allFilesInFolder != null && onToggleAllFilesInFolder != null && !allFilesGlobal) {
             DropdownMenuItem(
                 text = {
-                    androidx.compose.foundation.layout.Column {
-                        Text(
-                            stringResource(
-                                if (allFilesInFolder || allFilesGlobal) R.string.all_files_folder_off
-                                else R.string.all_files_folder_on,
-                            ),
-                        )
-                        if (allFilesGlobal) {
-                            Text(
-                                stringResource(R.string.all_files_folder_global),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
+                    Text(
+                        stringResource(
+                            if (allFilesInFolder) R.string.all_files_folder_off
+                            else R.string.all_files_folder_on,
+                        ),
+                    )
                 },
-                enabled = !allFilesGlobal,
                 onClick = {
                     menu = false
                     onToggleAllFilesInFolder()
                 },
                 leadingIcon = {
                     Icon(
-                        if (allFilesInFolder || allFilesGlobal) Icons.Rounded.FilterAlt else Icons.Rounded.InsertDriveFile,
+                        if (allFilesInFolder) Icons.Rounded.FilterAlt else Icons.Rounded.InsertDriveFile,
                         contentDescription = null,
                     )
                 },
@@ -1132,6 +1173,141 @@ private fun FolderOverflow(
                 },
                 leadingIcon = { Icon(Icons.Rounded.Settings, contentDescription = null) },
             )
+        }
+    }
+}
+
+/**
+ * The selection menu's cards. A swipe to the left shuffles to the next card, to the right to the
+ * previous one, round and round: the top card flies off to the side with a tilt and the next one
+ * comes up from under it. [footer] stays under every card. Light mode: the card just changes.
+ */
+@Composable
+private fun SwipeMenuCards(
+    cardCount: Int,
+    cardIndex: Int,
+    onCardChange: (Int) -> Unit,
+    card: @Composable (Int) -> Unit,
+    footer: @Composable () -> Unit,
+) {
+    val light = LocalLightMode.current
+    val density = LocalDensity.current
+    val switchAfterPx = with(density) { 48.dp.toPx() }
+    val maxPullPx = with(density) { 36.dp.toPx() }
+    val scope = rememberCoroutineScope()
+    // +1: to the next card (swiped left), -1: to the previous one.
+    var direction by remember { mutableIntStateOf(1) }
+    // Each new card goes under the one leaving.
+    var shuffles by remember { mutableIntStateOf(0) }
+    val pull = remember { Animatable(0f) }
+    val latestIndex by rememberUpdatedState(cardIndex)
+    val latestOnChange by rememberUpdatedState(onCardChange)
+
+    Column(
+        modifier = Modifier.pointerInput(cardCount, light) {
+            if (cardCount < 2) return@pointerInput
+            var dragged = 0f
+            detectHorizontalDragGestures(
+                onDragStart = { dragged = 0f },
+                onDragEnd = {
+                    if (abs(dragged) >= switchAfterPx) {
+                        val step = if (dragged < 0f) 1 else -1
+                        direction = step
+                        shuffles++
+                        latestOnChange(Math.floorMod(latestIndex + step, cardCount))
+                    }
+                    scope.launch { pull.animateTo(0f, tween(220, easing = FastOutSlowInEasing)) }
+                },
+                onDragCancel = { scope.launch { pull.animateTo(0f, tween(180)) } },
+                onHorizontalDrag = { change, amount ->
+                    change.consume()
+                    dragged += amount
+                    if (!light) scope.launch { pull.snapTo((dragged * 0.35f).coerceIn(-maxPullPx, maxPullPx)) }
+                },
+            )
+        },
+    ) {
+        // Every card has the width of the widest one, so the menu does not jump sideways while the
+        // cards are shuffled; the height follows the card shown (animated by the shuffle). The other
+        // cards are measured only, never shown nor touchable.
+        Layout(
+            content = {
+                ShuffledMenuCard(
+                    cardIndex = cardIndex,
+                    direction = direction,
+                    shuffles = shuffles,
+                    light = light,
+                    pullPx = { pull.value },
+                    card = card,
+                )
+                for (i in 0 until cardCount) {
+                    Column { card(i) }
+                }
+            },
+        ) { measurables, constraints ->
+            val loose = constraints.copy(minWidth = 0, minHeight = 0)
+            val sizes = measurables.drop(1).map { it.measure(loose) }
+            if (sizes.isEmpty()) {
+                val shown = measurables.first().measure(constraints)
+                return@Layout layout(shown.width, shown.height) { shown.place(0, 0) }
+            }
+            val width = sizes.maxOf { it.width }.coerceIn(constraints.minWidth, constraints.maxWidth)
+            val shown = measurables.first().measure(
+                Constraints(minWidth = width, maxWidth = width, minHeight = 0, maxHeight = constraints.maxHeight),
+            )
+            layout(width, shown.height) { shown.place(0, 0) }
+        }
+        footer()
+    }
+}
+
+/** The card on top of the menu's deck, shuffled away for the next one (see [SwipeMenuCards]). */
+@Composable
+private fun ShuffledMenuCard(
+    cardIndex: Int,
+    direction: Int,
+    shuffles: Int,
+    light: Boolean,
+    pullPx: () -> Float,
+    card: @Composable (Int) -> Unit,
+) {
+    AnimatedContent(
+        targetState = cardIndex,
+        transitionSpec = {
+            val d = direction
+            val enter = fadeIn(tween(200, delayMillis = 60)) +
+                scaleIn(tween(280, easing = FastOutSlowInEasing), initialScale = 0.9f) +
+                slideInHorizontally(tween(280, easing = FastOutSlowInEasing)) { d * it / 6 }
+            val exit = fadeOut(tween(220)) +
+                scaleOut(tween(240, easing = FastOutSlowInEasing), targetScale = 0.94f) +
+                slideOutHorizontally(tween(240, easing = FastOutSlowInEasing)) { -d * it * 2 / 3 }
+            // Clipped: a taller card leaving does not cover the items under the cards.
+            val resize = SizeTransform(clip = true) { _, _ ->
+                if (light) snap() else tween(260, easing = FastOutSlowInEasing)
+            }
+            (enter togetherWith exit using resize).apply {
+                targetContentZIndex = -shuffles.toFloat()
+            }
+        },
+        label = "menuCards",
+    ) { index ->
+        val tilt by transition.animateFloat(
+            transitionSpec = { tween(if (light) 0 else 260, easing = FastOutSlowInEasing) },
+            label = "menuCardTilt",
+        ) { state ->
+            when (state) {
+                EnterExitState.PreEnter -> direction * 5f
+                EnterExitState.Visible -> 0f
+                EnterExitState.PostExit -> -direction * 9f
+            }
+        }
+        Column(
+            modifier = Modifier.graphicsLayer {
+                rotationZ = tilt
+                translationX = pullPx()
+            },
+        ) {
+            card(index)
         }
     }
 }
@@ -1244,5 +1420,77 @@ private fun SmartSearchIcon(active: Boolean, enabled: Boolean, aiEffects: dev.an
                 )
                 drawRect(brush, blendMode = androidx.compose.ui.graphics.BlendMode.SrcIn)
             },
+    )
+}
+
+/**
+ * Folder settings (folder menu): its sorting, its hand-made order and the numbering of its file
+ * names. With the numbering on, the order also renames the files.
+ */
+@Composable
+private fun FolderSettingsDialog(
+    numbered: Boolean,
+    /** The name mixer gives this folder's files random names: no numbering there. */
+    numberingBlocked: Boolean,
+    onSort: () -> Unit,
+    onContentOrder: () -> Unit,
+    onToggleNumbering: (() -> Unit)?,
+    onDismiss: () -> Unit,
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Rounded.Tune, contentDescription = null) },
+        title = { Text(stringResource(R.string.folder_settings)) },
+        text = {
+            Column {
+                androidx.compose.material3.ListItem(
+                    headlineContent = { Text(stringResource(R.string.sort_action)) },
+                    leadingContent = { Icon(Icons.Rounded.SwapVert, contentDescription = null) },
+                    colors = androidx.compose.material3.ListItemDefaults.colors(containerColor = Color.Transparent),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable(onClick = onSort),
+                )
+                androidx.compose.material3.ListItem(
+                    headlineContent = { Text(stringResource(R.string.content_order_action)) },
+                    supportingContent = if (numbered) {
+                        { Text(stringResource(R.string.folder_order_renames)) }
+                    } else null,
+                    leadingContent = { Icon(Icons.Rounded.FormatListNumbered, contentDescription = null) },
+                    colors = androidx.compose.material3.ListItemDefaults.colors(containerColor = Color.Transparent),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable(onClick = onContentOrder),
+                )
+                val canToggle = onToggleNumbering != null && !numberingBlocked
+                androidx.compose.material3.ListItem(
+                    headlineContent = { Text(stringResource(R.string.folder_numbering)) },
+                    supportingContent = {
+                        Text(
+                            stringResource(
+                                if (numberingBlocked) R.string.content_order_anonymous_hint else R.string.folder_numbering_body,
+                            ),
+                        )
+                    },
+                    leadingContent = { Icon(Icons.Rounded.Tag, contentDescription = null) },
+                    trailingContent = {
+                        Switch(
+                            checked = numbered,
+                            onCheckedChange = { onToggleNumbering?.invoke() },
+                            enabled = canToggle,
+                        )
+                    },
+                    colors = androidx.compose.material3.ListItemDefaults.colors(containerColor = Color.Transparent),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable(enabled = canToggle) { onToggleNumbering?.invoke() },
+                )
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.done))
+            }
+        },
     )
 }

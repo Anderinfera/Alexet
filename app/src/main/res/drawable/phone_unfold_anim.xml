@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Foldable phone: slides right, unfolds to the left into a two-pane gallery,
+     then folds back while returning to the centre. Loops every 4.4 s. -->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt">
+
+    <aapt:attr name="android:drawable">
+        <vector
+            android:width="96dp"
+            android:height="96dp"
+            android:viewportWidth="96"
+            android:viewportHeight="96">
+
+            <group
+                android:name="slide"
+                android:translateX="-16">
+
+                <!-- Right half of the unfolded device: frame and screen -->
+                <path
+                    android:fillColor="#000000"
+                    android:pathData="M 48,19.5 L 74,19.5 Q 81.5,19.5 81.5,27 L 81.5,69 Q 81.5,76.5 74,76.5 L 48,76.5 Z" />
+                <path
+                    android:fillColor="#C4C4C4"
+                    android:pathData="M 48,22.5 L 74,22.5 Q 78.5,22.5 78.5,27 L 78.5,69 Q 78.5,73.5 74,73.5 L 48,73.5 Z" />
+
+                <!-- Left half: the inside of the flap, with the small grid -->
+                <group
+                    android:name="innerFlap"
+                    android:pivotX="48"
+                    android:scaleX="0">
+                    <path
+                        android:fillColor="#000000"
+                        android:pathData="M 48.5,19.5 L 22,19.5 Q 14.5,19.5 14.5,27 L 14.5,69 Q 14.5,76.5 22,76.5 L 48.5,76.5 Z" />
+                    <path
+                        android:fillColor="#C4C4C4"
+                        android:pathData="M 48.5,22.5 L 22,22.5 Q 17.5,22.5 17.5,27 L 17.5,69 Q 17.5,73.5 22,73.5 L 48.5,73.5 Z" />
+                    <path
+                        android:fillColor="#808080"
+                        android:pathData="M 20.5,25 h 7 v 7 h -7 z M 29,25 h 7 v 7 h -7 z M 37.5,25 h 7 v 7 h -7 z M 20.5,33.5 h 7 v 7 h -7 z M 29,33.5 h 7 v 7 h -7 z M 37.5,33.5 h 7 v 7 h -7 z M 20.5,42 h 7 v 7 h -7 z M 29,42 h 7 v 7 h -7 z M 37.5,42 h 7 v 7 h -7 z M 20.5,50.5 h 7 v 7 h -7 z M 29,50.5 h 7 v 7 h -7 z M 37.5,50.5 h 7 v 7 h -7 z M 20.5,59 h 7 v 7 h -7 z M 29,59 h 7 v 7 h -7 z" />
+                </group>
+
+                <!-- Right pane: divider on the hinge, large tiles, two play icons -->
+                <path
+                    android:fillColor="#808080"
+                    android:pathData="M 47.6,22.5 h 0.8 v 51 h -0.8 z" />
+                <path
+                    android:fillColor="#808080"
+                    android:pathData="M 50,25 h 12.5 v 12.5 h -12.5 z M 64.5,25 h 12.5 v 12.5 h -12.5 z M 50,39.5 h 12.5 v 12.5 h -12.5 z M 64.5,39.5 h 12.5 v 12.5 h -12.5 z M 50,54 h 12.5 v 12.5 h -12.5 z M 64.5,54 h 12.5 v 12.5 h -12.5 z" />
+                <path
+                    android:fillColor="#FFFFFF"
+                    android:pathData="M 67.15,31.25 a 3.6,3.6 0 1 0 7.2,0 a 3.6,3.6 0 1 0 -7.2,0 z M 52.65,60.25 a 3.6,3.6 0 1 0 7.2,0 a 3.6,3.6 0 1 0 -7.2,0 z" />
+                <path
+                    android:fillColor="#808080"
+                    android:pathData="M 69.45,29.35 L 72.65,31.25 L 69.45,33.15 z M 54.95,58.35 L 58.15,60.25 L 54.95,62.15 z" />
+
+                <!-- Cover: the folded phone's front, with the thick hinge edge -->
+                <group
+                    android:name="coverFlap"
+                    android:pivotX="48">
+                    <path
+                        android:fillColor="#000000"
+                        android:pathData="M 46,19.5 L 74,19.5 Q 81.5,19.5 81.5,27 L 81.5,69 Q 81.5,76.5 74,76.5 L 46,76.5 Z" />
+                    <path
+                        android:fillColor="#C4C4C4"
+                        android:pathData="M 55,22.5 L 74,22.5 Q 78.5,22.5 78.5,27 L 78.5,69 Q 78.5,73.5 74,73.5 L 55,73.5 Q 51,73.5 51,69.5 L 51,26.5 Q 51,22.5 55,22.5 Z" />
+                    <path
+                        android:fillColor="#808080"
+                        android:pathData="M 53,25 h 7 v 7 h -7 z M 61.5,25 h 7 v 7 h -7 z M 70,25 h 7 v 7 h -7 z M 53,33.5 h 7 v 7 h -7 z M 61.5,33.5 h 7 v 7 h -7 z M 70,33.5 h 7 v 7 h -7 z M 53,42 h 7 v 7 h -7 z M 61.5,42 h 7 v 7 h -7 z M 70,42 h 7 v 7 h -7 z M 53,50.5 h 7 v 7 h -7 z M 61.5,50.5 h 7 v 7 h -7 z M 70,50.5 h 7 v 7 h -7 z M 53,59 h 7 v 7 h -7 z M 61.5,59 h 7 v 7 h -7 z" />
+                </group>
+            </group>
+        </vector>
+    </aapt:attr>
+
+    <!-- Slide right, stay while open, slide back while folding -->
+    <target android:name="slide">
+        <aapt:attr name="android:animation">
+            <objectAnimator
+                android:duration="4400"
+                android:interpolator="@android:interpolator/linear"
+                android:repeatCount="infinite">
+                <propertyValuesHolder
+                    android:propertyName="translateX"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="-16.0" />
+                    <keyframe android:fraction="0.08" android:value="-16.0" />
+                    <keyframe
+                        android:fraction="0.22"
+                        android:interpolator="@android:interpolator/fast_out_slow_in"
+                        android:value="0.0" />
+                    <keyframe android:fraction="0.72" android:value="0.0" />
+                    <keyframe
+                        android:fraction="0.90"
+                        android:interpolator="@android:interpolator/fast_out_slow_in"
+                        android:value="-16.0" />
+                    <keyframe android:fraction="1" android:value="-16.0" />
+                </propertyValuesHolder>
+            </objectAnimator>
+        </aapt:attr>
+    </target>
+
+    <!-- Cover narrows to the hinge, then widens again on the way back -->
+    <target android:name="coverFlap">
+        <aapt:attr name="android:animation">
+            <objectAnimator
+                android:duration="4400"
+                android:interpolator="@android:interpolator/linear"
+                android:repeatCount="infinite">
+                <propertyValuesHolder
+                    android:propertyName="scaleX"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="1.0" />
+                    <keyframe android:fraction="0.27" android:value="1.0" />
+                    <keyframe
+                        android:fraction="0.36"
+                        android:interpolator="@android:interpolator/accelerate_quad"
+                        android:value="0.0" />
+                    <keyframe android:fraction="0.81" android:value="0.0" />
+                    <keyframe
+                        android:fraction="0.90"
+                        android:interpolator="@android:interpolator/decelerate_quad"
+                        android:value="1.0" />
+                    <keyframe android:fraction="1" android:value="1.0" />
+                </propertyValuesHolder>
+            </objectAnimator>
+        </aapt:attr>
+    </target>
+
+    <!-- Inner flap opens to the left once the cover is edge-on, and folds back first -->
+    <target android:name="innerFlap">
+        <aapt:attr name="android:animation">
+            <objectAnimator
+                android:duration="4400"
+                android:interpolator="@android:interpolator/linear"
+                android:repeatCount="infinite">
+                <propertyValuesHolder
+                    android:propertyName="scaleX"
+                    android:valueType="floatType">
+                    <keyframe android:fraction="0" android:value="0.0" />
+                    <keyframe android:fraction="0.36" android:value="0.0" />
+                    <keyframe
+                        android:fraction="0.45"
+                        android:interpolator="@android:interpolator/decelerate_quad"
+                        android:value="1.0" />
+                    <keyframe android:fraction="0.72" android:value="1.0" />
+                    <keyframe
+                        android:fraction="0.81"
+                        android:interpolator="@android:interpolator/accelerate_quad"
+                        android:value="0.0" />
+                    <keyframe android:fraction="1" android:value="0.0" />
+                </propertyValuesHolder>
+            </objectAnimator>
+        </aapt:attr>
+    </target>
+</animated-vector>

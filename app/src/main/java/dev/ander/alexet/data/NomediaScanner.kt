@@ -361,31 +361,62 @@ internal class NomediaScanner(context: Context) {
             }
         }
 
+        /** Photo and video types by lower-case extension; the one table behind [mimeOf] and [isVideoName]. */
+        private val MIME_BY_EXTENSION: Map<String, String> = hashMapOf(
+            "jpg" to "image/jpeg",
+            "jpeg" to "image/jpeg",
+            "png" to "image/png",
+            "gif" to "image/gif",
+            "webp" to "image/webp",
+            "heic" to "image/heic",
+            "heif" to "image/heif",
+            "bmp" to "image/bmp",
+            "dng" to "image/x-adobe-dng",
+            "avif" to "image/avif",
+            "tif" to "image/tiff",
+            "tiff" to "image/tiff",
+            "mp4" to "video/mp4",
+            "mkv" to "video/x-matroska",
+            "webm" to "video/webm",
+            "3gp" to "video/3gpp",
+            "mov" to "video/quicktime",
+            "m4v" to "video/x-m4v",
+            "avi" to "video/x-msvideo",
+            "ts" to "video/mp2t",
+            "mpeg" to "video/mpeg",
+            "mpg" to "video/mpeg",
+        )
+
+        private val VIDEO_EXTENSIONS: Array<String> =
+            MIME_BY_EXTENSION.filterValues { it.startsWith("video/") }.keys.toTypedArray()
+
         fun mimeOf(name: String): String? {
             val dot = name.lastIndexOf('.')
             val ext = if (dot >= 0 && dot < name.length - 1) name.substring(dot + 1).lowercase() else ""
-            return when (ext) {
-                "jpg", "jpeg" -> "image/jpeg"
-                "png" -> "image/png"
-                "gif" -> "image/gif"
-                "webp" -> "image/webp"
-                "heic" -> "image/heic"
-                "heif" -> "image/heif"
-                "bmp" -> "image/bmp"
-                "dng" -> "image/x-adobe-dng"
-                "avif" -> "image/avif"
-                "tif", "tiff" -> "image/tiff"
-                "mp4" -> "video/mp4"
-                "mkv" -> "video/x-matroska"
-                "webm" -> "video/webm"
-                "3gp" -> "video/3gpp"
-                "mov" -> "video/quicktime"
-                "m4v" -> "video/x-m4v"
-                "avi" -> "video/x-msvideo"
-                "ts" -> "video/mp2t"
-                "mpeg", "mpg" -> "video/mpeg"
-                else -> null
+            return MIME_BY_EXTENSION[ext]
+        }
+
+        /**
+         * Same as `mimeOf(name)?.startsWith("video/") == true`, without allocating: asked for every
+         * row built or copied.
+         */
+        fun isVideoName(name: String): Boolean {
+            for (ext in VIDEO_EXTENSIONS) {
+                if (hasExtension(name, ext)) return true
             }
+            return false
+        }
+
+        /** [name]'s text after its last dot, lower-cased as [String.lowercase] does, equals [ext] (letters and digits only). */
+        private fun hasExtension(name: String, ext: String): Boolean {
+            val start = name.length - ext.length
+            if (start < 1 || name[start - 1] != '.') return false
+            for (i in ext.indices) {
+                val c = name[start + i]
+                // lowercase() turns this one into two chars ("i" and a dot above), so it never matches.
+                if (c == 'İ' || Character.toLowerCase(c) != ext[i]) return false
+            }
+            return true
         }
 
         fun mimeOf(file: File): String? = mimeOf(file.name)
@@ -395,9 +426,10 @@ internal class NomediaScanner(context: Context) {
          * one ("application/binary", "application/octet-stream"...) to a file named as one.
          */
         fun mediaMimeOf(systemMime: String?, name: String): String? {
-            val byName = mimeOf(name) ?: return systemMime
             val general = systemMime.isNullOrBlank() || systemMime.startsWith("application/", ignoreCase = true)
-            return if (general) byName else systemMime
+            // A specific system type is kept as it is: the name is only looked at otherwise.
+            if (!general) return systemMime
+            return mimeOf(name) ?: systemMime
         }
 
         /**

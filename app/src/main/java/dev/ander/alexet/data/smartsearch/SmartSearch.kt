@@ -90,6 +90,10 @@ class SmartSearch(context: Context, private val settings: SettingsStore, private
     private val engineLock = Mutex()
     private var textEncoder: SmartTextEncoder? = null
     private var imageEncoder: SmartImageEncoder? = null
+    /** Closes [imageEncoder] a while after the last pass (see [scheduleImageReleaseLocked]). */
+    private var imageReleaseJob: Job? = null
+    /** The last query's vector: the open query is searched again as photos get indexed. */
+    private var queryCache: QueryVector? = null
     private var index: SmartIndex? = null
     private val indexedKeys = HashMap<Long, IndexedKey>()
     private var loadedModelId: String? = null
@@ -238,8 +242,33 @@ class SmartSearch(context: Context, private val settings: SettingsStore, private
     private fun closeEngines() {
         textEncoder?.close()
         textEncoder = null
+        closeImageEncoderLocked()
+        queryCache = null
+    }
+
+    /** Closes the image encoder at once and drops its pending release. Under [engineLock]. */
+    private fun closeImageEncoderLocked() {
+        imageReleaseJob?.cancel()
+        imageReleaseJob = null
         imageEncoder?.close()
         imageEncoder = null
+    }
+
+    /**
+     * The image encoder stays open for a while after a pass: each new photo (a download, a
+     * screenshot) starts a pass of its own, and opening the model costs more than encoding one
+     * photo. A new pass cancels the release. Under [engineLock].
+     */
+    private fun scheduleImageReleaseLocked() {
+        imageReleaseJob?.cancel()
+        imageReleaseJob = if (imageEncoder == null) null else scope.launch {
+            delay(IMAGE_IDLE_MS)
+            engineLock.withLock {
+                imageEncoder?.close()
+                imageEncoder = null
+                imageReleaseJob = null
+            }
+        }
     }
 
     /** Frees the encoders (hundreds of MB of native memory) unless one is working. */
@@ -285,6 +314,8 @@ class SmartSearch(context: Context, private val settings: SettingsStore, private
             Inputs(p.enabled, modelId, list, run, scanning, p.folders, p.paused)
         }.collectLatest { input ->
             if (!input.enabled || input.modelId == null) {
+                // Nothing will be indexed: the encoder kept open after the last pass goes now.
+                engineLock.withLock { closeImageEncoderLocked() }
                 _status.update { it.copy(indexing = false) }
                 if (!input.enabled) SmartIndexJobService.cancel(appContext)
                 return@collectLatest
@@ -328,7 +359,7 @@ class SmartSearch(context: Context, private val settings: SettingsStore, private
                 }
             }
         }
-        val total = input.media.count { SmartIndexPlanner.isEligible(it, secureDirs, input.folders) }
+        val total = plan.eligible
         _status.update { it.copy(total = total, indexed = (total - plan.toIndex.size).coerceAtLeast(0)) }
         if (!input.scanning || input.media.isNotEmpty()) planned.value = true
         if (plan.toIndex.isEmpty() || input.paused) {
@@ -363,6 +394,19 @@ class SmartSearch(context: Context, private val settings: SettingsStore, private
     }
 
     private suspend fun indexPhotos(items: List<GalleryMedia>, manifest: SmartManifest, total: Int) {
+        engineLock.withLock {
+            imageReleaseJob?.cancel()
+            imageReleaseJob = null
+        }
+        try {
+            indexBatches(items, manifest, total)
+        } finally {
+            // Also when the pass is stopped: the encoder does not stay open until the next one.
+            withContext(NonCancellable) { engineLock.withLock { scheduleImageReleaseLocked() } }
+        }
+    }
+
+    private suspend fun indexBatches(items: List<GalleryMedia>, manifest: SmartManifest, total: Int) {
         var done = total - items.size
         var statusAt = 0L
         for (batch in items.chunked(BATCH)) {
@@ -394,10 +438,6 @@ class SmartSearch(context: Context, private val settings: SettingsStore, private
             }
         }
         _status.update { it.copy(indexed = done.coerceAtMost(it.total)) }
-        engineLock.withLock {
-            imageEncoder?.close()
-            imageEncoder = null
-        }
     }
 
     /** Into the database and the index; false when the index is gone (the model was removed meanwhile). */
@@ -433,8 +473,13 @@ class SmartSearch(context: Context, private val settings: SettingsStore, private
         ensureIndexLoaded(manifest)
         lastQueryAt = System.currentTimeMillis()
         val (vector, idx) = engineLock.withLock {
-            val encoder = textEncoder ?: SmartTextEncoder(modelDir, manifest).also { textEncoder = it }
-            encoder.encode(text) to index
+            // The same query again (searched again as photos get indexed): no encoder needed.
+            val cached = queryCache?.takeIf { it.modelId == manifest.modelId && it.text == text }
+            val encoded = cached?.vector ?: run {
+                val encoder = textEncoder ?: SmartTextEncoder(modelDir, manifest).also { textEncoder = it }
+                encoder.encode(text).also { queryCache = QueryVector(manifest.modelId, text, it) }
+            }
+            encoded to index
         }
         scheduleTextRelease()
         idx?.search(vector, limit, minCosine(manifest)) ?: emptyList()
@@ -446,6 +491,9 @@ class SmartSearch(context: Context, private val settings: SettingsStore, private
         ensureIndexLoaded(manifest)
         engineLock.withLock { index }?.snapshot()
     }
+
+    /** [vector] is only read (by [SmartIndex.search]), never handed out. */
+    private class QueryVector(val modelId: String, val text: String, val vector: FloatArray)
 
     private var releaseJob: Job? = null
 
@@ -541,6 +589,7 @@ class SmartSearch(context: Context, private val settings: SettingsStore, private
         private const val MEDIA_DEBOUNCE_MS = 2_000L
         private const val JOB_PLAN_TIMEOUT_MS = 120_000L
         private const val TEXT_IDLE_MS = 120_000L
+        private const val IMAGE_IDLE_MS = 90_000L
         private const val SEARCH_LIMIT = 300
         /** SigLIP match probability below which a photo is not shown at all. */
         private const val MIN_PROBABILITY = 0.001

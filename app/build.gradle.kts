@@ -24,8 +24,8 @@ android {
         applicationId = "dev.ander.alexet"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 385
-        versionName = "1.1.0"
+        versionCode = 386
+        versionName = "1.2.0"
     }
 
     buildFeatures {

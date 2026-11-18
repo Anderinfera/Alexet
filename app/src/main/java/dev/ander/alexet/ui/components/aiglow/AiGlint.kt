@@ -3,6 +3,8 @@ package dev.ander.alexet.ui.components.aiglow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
@@ -34,10 +36,13 @@ fun rememberAiGlint(config: AiEffectsConfig, active: Boolean, trigger: Any? = nu
     val style = config.style(AiEffect.FOLDER_GLINT)
     val strength = rememberEffectStrength(config, AiEffect.FOLDER_GLINT, active, trigger)
     val renderer = remember { AiGlowRenderer() }
-    if (!style.enabled || strength.value <= 0f) return null
+    // Only on/off reaches composition: the fade is read when drawing, so the folders reading
+    // the glint are not recomposed every frame of it.
+    val shown by remember(strength) { derivedStateOf { strength.value > 0f } }
+    if (!style.enabled || !shown) return null
     val colors = aiColors(config, AiEffect.FOLDER_GLINT)
     val phase = rememberAiPhase(style.speed, periodMs = GLINT_PERIOD_MS)
-    return AiGlint(colors, style, phase, strength, renderer)
+    return remember(colors, style, phase, strength, renderer) { AiGlint(colors, style, phase, strength, renderer) }
 }
 
 const val GLINT_PERIOD_MS = 4_000

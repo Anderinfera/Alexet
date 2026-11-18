@@ -669,13 +669,14 @@ private fun FolderPane(
                 onToggleSelect = onToggleSelect,
                 onMarqueeSelect = onMarqueeFiles,
                 onTransientCountChange = onTransientCountChange,
-                twoFingerDragEnabled = uiState.settings.contentViewMode.usesFolderDrag() &&
+                // Moving between folders, or (split screen) into the other app.
+                twoFingerDragEnabled = (uiState.settings.contentViewMode.usesFolderDrag() || LocalExternalFileDrag.current) &&
                     !(uiState.contentOrderMode && uiState.contentOrderFolderId == album.id),
                 onTwoFingerStart = { onTwoFingerStart(album.id, it) },
                 onTwoFingerDrag = onTwoFingerDrag,
                 onTwoFingerEnd = onTwoFingerEnd,
                 linearMarquee = uiState.settings.fileSelectMode == FileSelectMode.LINEAR,
-                videoDoubleClickToGallery = uiState.settings.videoDoubleClickToGallery,
+                videoDoubleClickToGallery = uiState.settings.videoDoubleClickToGallery && !uiState.settings.videosOnlyInAlexet,
                 albumId = album.id,
                 initialScrollPos = onGetFolderScroll(album.id),
                 gridState = onGetFolderGridState(album.id),

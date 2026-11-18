@@ -40,11 +40,14 @@ internal object HiddenFolderMarker {
     }
 
     /** The same hidden folders and files, in any order. */
-    fun sameRead(a: NomediaScanResult, b: NomediaScanResult): Boolean =
-        a.media.size == b.media.size &&
+    fun sameRead(a: NomediaScanResult, b: NomediaScanResult): Boolean {
+        if (a === b) return true
+        return a.media.size == b.media.size &&
             a.hiddenRelativePaths.mapTo(HashSet()) { it.trim().trim('/').lowercase() } ==
             b.hiddenRelativePaths.mapTo(HashSet()) { it.trim().trim('/').lowercase() } &&
-            a.media.toHashSet() == b.media.toHashSet()
+            // The same files in the same order (the usual case) need no sets.
+            (a.media == b.media || a.media.toHashSet() == b.media.toHashSet())
+    }
 
     /** Marks the rows of [store] in hidden folders and adds the hidden files of [nomedia] it lacks. */
     fun merge(store: List<GalleryMedia>, nomedia: NomediaScanResult): List<GalleryMedia> {

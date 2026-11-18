@@ -35,6 +35,14 @@ fun VideoPlayerGestureDetector(
     onSetPlaybackSpeedTemporary: (Float?) -> Unit,
     onTogglePlayPause: () -> Unit = {},
     config: AnderLineConfig = AnderLineConfig(),
+    /** A sideways swipe seeks (the pager does not get it then). */
+    horizontalSeek: Boolean = false,
+    /** A seek swipe begins: returns the position it starts from. */
+    onSwipeSeekStart: () -> Long = { playerState.positionMs },
+    /** Live preview while swiping (throttled). */
+    onSwipeSeekPreview: (Long) -> Unit = {},
+    /** The swipe ends at this position; null when it was cancelled (a second finger). */
+    onSwipeSeekEnd: (Long?) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
@@ -46,6 +54,10 @@ fun VideoPlayerGestureDetector(
     val setSpeedTempState = rememberUpdatedState(onSetPlaybackSpeedTemporary)
     val togglePlayPauseState = rememberUpdatedState(onTogglePlayPause)
     val configState = rememberUpdatedState(config)
+    val horizontalSeekState = rememberUpdatedState(horizontalSeek)
+    val swipeSeekStartState = rememberUpdatedState(onSwipeSeekStart)
+    val swipeSeekPreviewState = rememberUpdatedState(onSwipeSeekPreview)
+    val swipeSeekEndState = rememberUpdatedState(onSwipeSeekEnd)
 
     val doubleTapFeedbackJob = remember { mutableMapOf<SeekSide, Job>() }
     val lastTap = remember { longArrayOf(0L) }
@@ -62,7 +74,7 @@ fun VideoPlayerGestureDetector(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .pointerInput(playerState.controlsLocked, config) {
+            .pointerInput(playerState.controlsLocked) {
                 if (playerState.controlsLocked) {
                     detectTapGestures(onTap = { toggleControlsState.value() })
                     return@pointerInput
@@ -79,6 +91,12 @@ fun VideoPlayerGestureDetector(
                     var consumedAsSwipe = false
                     var consumedAsSeek = false
                     var moved = false
+                    // Sideways seek: where it started (video and finger) and its current target.
+                    var seekStartMs = -1L
+                    var seekXAtSlop = 0f
+                    var seekTarget = -1L
+                    var seekCancelled = false
+                    var lastPreviewAt = 0L
                     val cfg = configState.value
                     val seekSeconds = cfg.seekIncrement.coerceIn(1, 60)
 
@@ -103,6 +121,23 @@ fun VideoPlayerGestureDetector(
                                 break
                             }
                             val delta = change.position - downPos
+                            if (consumedAsSeek) {
+                                if (event.changes.count { it.pressed } > 1) {
+                                    // A second finger (a pinch): no seek.
+                                    seekCancelled = true
+                                    break
+                                }
+                                val amount = swipeSeekAmount(change.position.x - seekXAtSlop, seekStartMs, playerState.durationMs)
+                                seekTarget = seekStartMs + amount
+                                playerState.swipeSeek = SwipeSeekFeedback(amountMs = amount, targetMs = seekTarget)
+                                val now = System.currentTimeMillis()
+                                if (now - lastPreviewAt >= SWIPE_SEEK_PREVIEW_MS) {
+                                    lastPreviewAt = now
+                                    swipeSeekPreviewState.value(seekTarget)
+                                }
+                                change.consume()
+                                continue
+                            }
                             if (!isLongPress.get() && (delta.getDistance() > touchSlop || change.isConsumed)) {
                                 // A drag (e.g. the pager swiping to the next item) is not a hold:
                                 // it must not switch to the fast speed halfway.
@@ -125,6 +160,21 @@ fun VideoPlayerGestureDetector(
                                     }
                                 }
                             }
+                            if (!consumedAsSwipe && !isLongPress.get() && !change.isConsumed &&
+                                horizontalSeekState.value && playerState.durationMs > 0L &&
+                                event.changes.count { it.pressed } == 1 &&
+                                abs(delta.x) > touchSlop && abs(delta.x) > abs(delta.y)
+                            ) {
+                                consumedAsSeek = true
+                                moved = true
+                                longPressJob?.cancel()
+                                seekStartMs = swipeSeekStartState.value()
+                                seekXAtSlop = change.position.x
+                                seekTarget = seekStartMs
+                                playerState.swipeSeek = SwipeSeekFeedback(amountMs = 0L, targetMs = seekStartMs)
+                                change.consume()
+                                continue
+                            }
                             if (consumedAsSwipe && verticalKind != null) {
                                 val dy = change.positionChange().y
                                 val fraction = (-dy / size.height.toFloat()).coerceIn(-0.15f, 0.15f)
@@ -135,6 +185,11 @@ fun VideoPlayerGestureDetector(
                         }
                     } finally {
                         longPressJob?.cancel()
+                        if (consumedAsSeek) {
+                            // Also when the handler restarts mid-swipe: the player is not left scrubbing.
+                            playerState.swipeSeek = null
+                            swipeSeekEndState.value(if (seekCancelled) null else seekTarget)
+                        }
                         // Also when the handler restarts mid-hold: the temporary speed must not stick.
                         if (isLongPress.get()) {
                             playerState.isLongPressSpeedActive = false
@@ -144,8 +199,8 @@ fun VideoPlayerGestureDetector(
 
                     val upTime = System.currentTimeMillis()
                     val duration = upTime - downTime
-                    if (isLongPress.get()) {
-                        // Speed already restored above.
+                    if (isLongPress.get() || consumedAsSeek) {
+                        // Speed restored / seek finished above.
                     } else if (consumedAsSwipe) {
                         volumeAccum[0] = 0f
                         playerState.gestureBrightness = -1f
@@ -279,3 +334,6 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 }
 
 private const val DOUBLE_TAP_WINDOW_MS = 300L
+
+/** How often a seek swipe shows the frame it is at. */
+private const val SWIPE_SEEK_PREVIEW_MS = 100L

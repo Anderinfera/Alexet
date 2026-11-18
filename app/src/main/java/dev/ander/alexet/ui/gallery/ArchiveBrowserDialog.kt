@@ -29,7 +29,9 @@ import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FolderZip
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.OpenInNew
+import androidx.compose.material.icons.rounded.Unarchive
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -104,6 +106,7 @@ fun ArchiveBrowserDialog(
     onNavigate: (String) -> Unit,
     onOpenEntry: (ArchiveReader.Entry) -> Unit,
     onOpenOutside: () -> Unit,
+    onUnpack: () -> Unit,
     onCancelExtract: () -> Unit,
     onBack: () -> Unit,
     onClose: () -> Unit,
@@ -209,7 +212,7 @@ fun ArchiveBrowserDialog(
                                                 },
                                                 busy = row.entry != null && state.extracting == row.path,
                                                 onClick = {
-                                                    if (state.extracting != null) return@ArchiveRowItem
+                                                    if (state.busy) return@ArchiveRowItem
                                                     if (row.entry == null) onNavigate(row.path) else onOpenEntry(row.entry)
                                                 },
                                             )
@@ -219,15 +222,16 @@ fun ArchiveBrowserDialog(
                             }
                         }
                     }
-                    // Unpacking a file to open it
-                    if (state.extracting != null) {
+                    // Unpacking a file to open it, or the whole archive
+                    if (state.busy) {
                         Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    text = if (state.progress >= 0) {
-                                        stringResource(R.string.archive_extracting_percent, state.progress)
-                                    } else {
-                                        stringResource(R.string.archive_extracting)
+                                    text = when {
+                                        state.unpacking && state.progress >= 0 -> stringResource(R.string.archive_unpacking_percent, state.progress)
+                                        state.unpacking -> stringResource(R.string.archive_unpacking)
+                                        state.progress >= 0 -> stringResource(R.string.archive_extracting_percent, state.progress)
+                                        else -> stringResource(R.string.archive_extracting)
                                     },
                                     style = MaterialTheme.typography.bodyMedium,
                                     modifier = Modifier.weight(1f),
@@ -242,27 +246,33 @@ fun ArchiveBrowserDialog(
                         }
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    // Summary and the whole archive in another app
+                    // Summary, then the whole archive in another app or unpacked into a folder
+                    if (listing is ArchiveReader.Listing.Ok) {
+                        Text(
+                            text = stringResource(R.string.archive_summary, summary.first, formatBytes(summary.second)),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 8.dp),
+                        )
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 24.dp, end = 12.dp, top = 6.dp, bottom = 10.dp),
+                            .padding(start = 12.dp, end = 16.dp, top = 2.dp, bottom = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            text = if (listing is ArchiveReader.Listing.Ok) {
-                                stringResource(R.string.archive_summary, summary.first, formatBytes(summary.second))
-                            } else {
-                                ""
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f),
-                        )
                         TextButton(onClick = onOpenOutside) {
                             Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
                             Text(stringResource(R.string.archive_open_in_app))
+                        }
+                        Spacer(Modifier.weight(1f))
+                        if (listing is ArchiveReader.Listing.Ok && listing.canExtract && summary.first > 0) {
+                            FilledTonalButton(onClick = onUnpack, enabled = !state.busy) {
+                                Icon(Icons.Rounded.Unarchive, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(stringResource(R.string.archive_unpack))
+                            }
                         }
                     }
                 }

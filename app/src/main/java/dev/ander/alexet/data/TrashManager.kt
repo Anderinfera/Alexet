@@ -304,7 +304,7 @@ class TrashManager(private val context: Context) {
     private fun trashRootPaths(): List<String> =
         (listOf(trashDir) + otherTrashDirs()).mapNotNull { root -> runCatching { root.canonicalFile.path }.getOrNull() }
 
-    private fun isUnderTrashRoot(file: File, rootPaths: List<String> = trashRootPaths()): Boolean {
+    private fun isUnderTrashRoot(file: File, rootPaths: List<String>): Boolean {
         val candidate = runCatching { file.canonicalFile }.getOrNull() ?: return false
         return rootPaths.any { root ->
             candidate.path == root || candidate.path.startsWith(root + File.separator)
@@ -366,7 +366,8 @@ class TrashManager(private val context: Context) {
                 }
             }
         }
-        val remaining = current.filterNot { it in actuallyPurged }
+        val purgedSet = actuallyPurged.toHashSet()
+        val remaining = current.filterNot { it in purgedSet }
         saveInternal(remaining)
         return actuallyPurged
     }
@@ -389,8 +390,8 @@ class TrashManager(private val context: Context) {
         }
     }
 
-    private fun discardUnindexedTrashCopy(targetFile: File) {
-        if (!isUnderTrashRoot(targetFile)) {
+    private fun discardUnindexedTrashCopy(targetFile: File, rootPaths: List<String>) {
+        if (!isUnderTrashRoot(targetFile, rootPaths)) {
             dev.ander.alexet.data.AppLog.w("TrashManager", "Skip discard outside trash root: ${targetFile.path}")
             return
         }
@@ -410,6 +411,8 @@ class TrashManager(private val context: Context) {
             val trashed = ArrayList<TrashedItem>()
             val now = System.currentTimeMillis()
             val trashRoot = trashDir.canonicalFile
+            // Worked out once for the batch, and only if a copy has to be discarded.
+            val rootPaths by lazy(LazyThreadSafetyMode.NONE) { trashRootPaths() }
             writePendingJournal(mediaItems, now, fileResolver)
 
             try {
@@ -451,7 +454,7 @@ class TrashManager(private val context: Context) {
                                         sourceRemoved = (deleted || !srcFile.exists())
                                     }
                                 } else {
-                                    discardUnindexedTrashCopy(targetFile)
+                                    discardUnindexedTrashCopy(targetFile, rootPaths)
                                 }
                             }
                         } else {
@@ -464,7 +467,7 @@ class TrashManager(private val context: Context) {
                                 moved = true
                                 sourceRemoved = false
                             } else {
-                                discardUnindexedTrashCopy(targetFile)
+                                discardUnindexedTrashCopy(targetFile, rootPaths)
                             }
                         }
 
@@ -496,7 +499,7 @@ class TrashManager(private val context: Context) {
                             trashed += trashedItem
                             current += trashedItem
                         } else {
-                            discardUnindexedTrashCopy(targetFile)
+                            discardUnindexedTrashCopy(targetFile, rootPaths)
                         }
                     } catch (e: Exception) {
                         // One file failing (I/O error, odd path) does not cost the entries of the others.
@@ -561,9 +564,32 @@ class TrashManager(private val context: Context) {
      * Puts [item] back where it was, or into [targetDir] when one is given ([targetRelativePath]
      * is that folder's MediaStore path, for the fallback that inserts a row).
      */
-    private fun restoreOne(item: TrashedItem, targetDir: File? = null, targetRelativePath: String? = null): Pair<File, Boolean>? {
+    /** Canonical paths of the mounted storage volumes (internal or SD card), not only the primary one. */
+    private fun volumeRootPaths(): List<String> {
+        val extRoot = Environment.getExternalStorageDirectory()
+        return buildList {
+            extRoot?.let { add(it) }
+            appContext.getExternalFilesDirs(null).filterNotNull().forEach { appDir ->
+                // .../<volume>/Android/data/<pkg>/files -> .../<volume>
+                appDir.parentFile?.parentFile?.parentFile?.parentFile?.let { add(it) }
+            }
+        }.mapNotNull { runCatching { it.canonicalPath }.getOrNull() }.distinct()
+    }
+
+    /**
+     * Puts [item] back where it was, or into [targetDir] when one is given ([targetRelativePath]
+     * is that folder's MediaStore path, for the fallback that inserts a row). [rootPaths] and
+     * [volumeRoots] are worked out once per batch.
+     */
+    private fun restoreOne(
+        item: TrashedItem,
+        targetDir: File?,
+        targetRelativePath: String?,
+        rootPaths: List<String>,
+        volumeRoots: Lazy<List<String>>,
+    ): Pair<File, Boolean>? {
         val trashFile = File(item.trashFilePath)
-        if (!isUnderTrashRoot(trashFile)) {
+        if (!isUnderTrashRoot(trashFile, rootPaths)) {
             dev.ander.alexet.data.AppLog.w("TrashManager", "Skip restore: trash path outside trash root: ${item.trashFilePath}")
             return null
         }
@@ -574,17 +600,9 @@ class TrashManager(private val context: Context) {
             File(item.originalPath)
         }
         val extRoot = Environment.getExternalStorageDirectory()
-        // Any mounted storage volume (internal or SD card), not only the primary one.
-        val volumeRoots = buildList {
-            extRoot?.let { add(it) }
-            appContext.getExternalFilesDirs(null).filterNotNull().forEach { appDir ->
-                // .../<volume>/Android/data/<pkg>/files -> .../<volume>
-                appDir.parentFile?.parentFile?.parentFile?.parentFile?.let { add(it) }
-            }
-        }.mapNotNull { runCatching { it.canonicalPath }.getOrNull() }.distinct()
         val originalCanonical = runCatching { original.canonicalPath }.getOrNull()
         val isSafePath = !original.path.contains("..") && originalCanonical != null &&
-            volumeRoots.any { root -> originalCanonical.startsWith("$root/") }
+            volumeRoots.value.any { root -> originalCanonical.startsWith("$root/") }
         val effectiveOriginal = if (isSafePath) {
             original
         } else {
@@ -679,9 +697,9 @@ class TrashManager(private val context: Context) {
         }
     }
 
-    private fun deleteOne(item: TrashedItem): Boolean {
+    private fun deleteOne(item: TrashedItem, rootPaths: List<String>): Boolean {
         val file = File(item.trashFilePath)
-        if (!isUnderTrashRoot(file)) {
+        if (!isUnderTrashRoot(file, rootPaths)) {
             dev.ander.alexet.data.AppLog.w("TrashManager", "Skip permanent delete outside trash root: ${item.trashFilePath}")
             // Drop poisoned index entry without deleting outside trash.
             return true
@@ -711,8 +729,10 @@ class TrashManager(private val context: Context) {
         val restoredFiles = ArrayList<File>()
         val restoredIds = HashSet<Long>()
 
+        val rootPaths = trashRootPaths()
+        val volumeRoots = lazy(LazyThreadSafetyMode.NONE) { volumeRootPaths() }
         for (item in itemsToRestore) {
-            val result = restoreOne(item, targetDir, targetRelativePath) ?: continue
+            val result = restoreOne(item, targetDir, targetRelativePath, rootPaths, volumeRoots) ?: continue
             restoredFiles += result.first
             restoredIds += item.id
         }
@@ -750,8 +770,9 @@ class TrashManager(private val context: Context) {
         val deletedIds = HashSet<Long>()
         var deletedCount = 0
 
+        val rootPaths = trashRootPaths()
         for (item in itemsToDelete) {
-            if (deleteOne(item)) {
+            if (deleteOne(item, rootPaths)) {
                 deletedCount++
                 deletedIds += item.id
             }

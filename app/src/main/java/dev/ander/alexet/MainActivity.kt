@@ -108,8 +108,13 @@ class MainActivity : FragmentActivity() {
                 "display=${d?.refreshRate} Hz mode=${d?.mode?.physicalWidth}x${d?.mode?.physicalHeight} " +
                 "cpus=${Runtime.getRuntime().availableProcessors()}"
         }
+        val firstOpenCheck = viewModel.needsFirstOpenCheck()
+        // Nothing reads its frames then (no first-run check, no debug log): no frame callback
+        // for every vsync of the first seconds. Checked after the view model, which loads the
+        // settings that switch the debug log on.
+        if (!firstOpenCheck && !Log.enabled) return
         frameMonitor = FrameMonitor(
-            maxRunMs = if (viewModel.needsFirstOpenCheck()) FrameMonitor.FIRST_RUN_MAX_MS else FrameMonitor.LOG_AFTER_MS,
+            maxRunMs = if (firstOpenCheck) FrameMonitor.FIRST_RUN_MAX_MS else FrameMonitor.LOG_AFTER_MS,
         ).also { it.start() }
     }
 

@@ -67,8 +67,9 @@ data class FoldableState(
     val isVerticalSeparating: Boolean
         get() = isSeparating && foldingFeature?.orientation == FoldingFeature.Orientation.VERTICAL
 
+    /** Two panes; half folded like a laptop (tabletop) keeps them, as when unfolded. */
     val showListDetail: Boolean
-        get() = !isTabletop && (isMediumWidth || isBook || isVerticalSeparating)
+        get() = isMediumWidth || isBook || isVerticalSeparating
 
     /**
      * Detects if foldable device is folded/bent along the hinge.

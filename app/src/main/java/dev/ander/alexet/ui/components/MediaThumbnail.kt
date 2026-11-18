@@ -215,12 +215,11 @@ fun MediaThumbnail(
         }
     }
 
-    Box(modifier = modifier.clip(shape)) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(if (thumbnail) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Black),
-        )
+    Box(
+        modifier = modifier
+            .clip(shape)
+            .background(if (thumbnail) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Black),
+    ) {
         if (pinnedCover != null) {
             Image(
                 bitmap = remember(pinnedCover) { pinnedCover.asImageBitmap() },
@@ -299,14 +298,15 @@ fun MediaThumbnail(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(6.dp)
-                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
-                        .background(MaterialTheme.colorScheme.secondaryContainer)
+                        .background(MaterialTheme.colorScheme.secondaryContainer, DurationPillShape)
                         .padding(horizontal = 6.dp, vertical = 2.dp),
                 )
             }
         }
     }
 }
+
+private val DurationPillShape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
 
 fun formatDuration(
     ms: Long,

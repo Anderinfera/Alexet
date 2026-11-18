@@ -113,6 +113,38 @@ private fun Rect.touches(other: Rect): Boolean {
         bottom >= other.top
 }
 
+/**
+ * Grid tiles' layout coordinates by id. Their window bounds are worked out only when a gesture
+ * reads them: kept as rects, every tile computed its bounds on every scroll frame.
+ */
+class TileBounds {
+    private val coords = mutableMapOf<Long, LayoutCoordinates>()
+
+    operator fun set(id: Long, layout: LayoutCoordinates) {
+        coords[id] = layout
+    }
+
+    fun remove(id: Long) {
+        coords.remove(id)
+    }
+
+    fun retainAll(ids: Set<Long>) {
+        coords.keys.retainAll(ids)
+    }
+
+    /** The bounds of [id] in the window now; null when it has none (gone, or detached). */
+    operator fun get(id: Long): Rect? = coords[id]?.takeIf { it.isAttached }?.boundsInWindow()
+
+    /** Every tile's bounds in the window now, in the order the tiles were first laid out. */
+    fun inWindow(): Map<Long, Rect> {
+        val out = LinkedHashMap<Long, Rect>(coords.size)
+        for ((id, layout) in coords) {
+            if (layout.isAttached) out[id] = layout.boundsInWindow()
+        }
+        return out
+    }
+}
+
 private fun edgeScrollDelta(y: Float, height: Float, edge: Float, maxSpeed: Float): Float {
     if (height <= edge * 2f) return 0f
     return when {
@@ -131,7 +163,7 @@ private fun edgeScrollDelta(y: Float, height: Float, edge: Float, maxSpeed: Floa
 @Composable
 fun MarqueeBox(
     enabled: Boolean,
-    itemBoundsInWindow: Map<Long, Rect>,
+    itemBoundsInWindow: TileBounds,
     onSelectIds: (List<Long>) -> Unit,
     modifier: Modifier = Modifier,
     selectedIds: List<Long> = emptyList(),
@@ -206,7 +238,8 @@ fun MarqueeBox(
                                 ?: origin
                             val hostNow = hostState.value
                             val originW = toWindowPoint(hostNow, origin)
-                            val visible = visibleItemBounds(hostNow, boundsState.value)
+                            val boundsNow = boundsState.value.inWindow()
+                            val visible = visibleItemBounds(hostNow, boundsNow)
                             val ordered = orderedState.value
                             val useLinear = linearState.value && ordered.isNotEmpty()
                             val startIndex = if (useLinear) {
@@ -218,7 +251,7 @@ fun MarqueeBox(
                                 ordered.getOrNull(startIndex)
                             } else {
                                 idsIntersectingOrdered(
-                                    boundsState.value,
+                                    boundsNow,
                                     toWindow(hostNow, Rect(origin, origin)),
                                     ordered,
                                 ).firstOrNull()
@@ -232,13 +265,13 @@ fun MarqueeBox(
                                 val hit = if (useLinear) {
                                     idsInLinearRange(
                                         ordered = orderedState.value,
-                                        bounds = visibleItemBounds(host, boundsState.value),
+                                        bounds = visibleItemBounds(host, boundsState.value.inWindow()),
                                         origin = toWindowPoint(host, origin),
                                         finger = toWindowPoint(host, finger),
                                         startIndex = startIndex,
                                     )
                                 } else {
-                                    val bounds = boundsState.value
+                                    val bounds = boundsState.value.inWindow()
                                     val now = idsIntersectingOrdered(
                                         bounds,
                                         toWindow(host, Rect(origin, finger)),

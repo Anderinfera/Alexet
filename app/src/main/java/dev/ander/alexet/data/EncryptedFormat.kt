@@ -39,11 +39,14 @@ object EncryptedFormat {
         var current = ByteArray(CHUNK)
         var currentLen = readFully(input, current)
         var next = ByteArray(CHUNK)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        val sealed = ByteArray(CHUNK + TAG_BYTES)
         var index = 0
         while (true) {
             val nextLen = readFully(input, next)
             val last = nextLen == 0
-            output.write(seal(key, header, index, last, current, currentLen))
+            val sealedLen = seal(cipher, key, header, index, last, current, currentLen, sealed)
+            output.write(sealed, 0, sealedLen)
             if (last) break
             val swap = current
             current = next
@@ -135,7 +138,7 @@ object EncryptedFormat {
      * Reads a version 2 file at any position, decrypting only the chunk that holds it (video
      * playback seeks). Null for version 1 files, which can only be read from the start.
      */
-    fun openRandomAccess(file: java.io.File, key: SecretKey): RandomAccessReader? {
+    fun openRandomAccess(file: java.io.File, key: SecretKey, cachedChunks: Int = 1): RandomAccessReader? {
         val raf = java.io.RandomAccessFile(file, "r")
         try {
             val head = ByteArray(HEADER)
@@ -143,70 +146,112 @@ object EncryptedFormat {
                 raf.close()
                 return null
             }
-            return RandomAccessReader(raf, key, head)
+            return RandomAccessReader(raf, key, head, cachedChunks)
         } catch (e: Exception) {
             raf.close()
             throw e
         }
     }
 
+    /**
+     * Keeps up to `cachedChunks` decrypted chunks (most recently used first): a video's `moov`
+     * box is often at the end while its first frames are at the start.
+     */
     class RandomAccessReader internal constructor(
         private val raf: java.io.RandomAccessFile,
         private val key: SecretKey,
         private val header: ByteArray,
+        cachedChunks: Int = 1,
     ) : java.io.Closeable {
         private val fileLength = raf.length()
         val size: Long = plaintextSize(fileLength, java.io.ByteArrayInputStream(header))
         private val sealed = ByteArray(CHUNK + TAG_BYTES)
-        private var plain = ByteArray(0)
-        private var plainIndex = -1
+        private val cipher: Cipher by lazy(LazyThreadSafetyMode.NONE) { Cipher.getInstance("AES/GCM/NoPadding") }
+        private val slots = Array(cachedChunks.coerceIn(1, 4)) { PlainChunk() }
+
+        private class PlainChunk {
+            var plain = ByteArray(0)
+            var plainLen = 0
+            var index = -1
+
+            fun wipe() {
+                java.util.Arrays.fill(plain, 0)
+                plainLen = 0
+                index = -1
+            }
+        }
 
         /** Copies up to [len] bytes at [position]; -1 at the end. Throws for tampered data. */
         fun read(position: Long, buffer: ByteArray, offset: Int, len: Int): Int {
             if (len == 0) return 0
             if (position >= size) return -1
             val index = (position / CHUNK).toInt()
-            if (index != plainIndex) load(index)
+            val chunk = chunk(index)
             val inChunk = (position - index.toLong() * CHUNK).toInt()
-            val n = minOf(len, plain.size - inChunk)
+            val n = minOf(len, chunk.plainLen - inChunk)
             if (n <= 0) return -1
-            System.arraycopy(plain, inChunk, buffer, offset, n)
+            System.arraycopy(chunk.plain, inChunk, buffer, offset, n)
             return n
         }
 
-        private fun load(index: Int) {
+        /** The slot holding chunk [index], loading it into the least recently used one if needed. */
+        private fun chunk(index: Int): PlainChunk {
+            var at = slots.indexOfFirst { it.index == index }
+            if (at < 0) {
+                at = slots.size - 1
+                load(index, slots[at])
+            }
+            val chunk = slots[at]
+            if (at > 0) {
+                System.arraycopy(slots, 0, slots, 1, at)
+                slots[0] = chunk
+            }
+            return chunk
+        }
+
+        private fun load(index: Int, chunk: PlainChunk) {
             val start = HEADER + index.toLong() * (CHUNK + TAG_BYTES)
             val length = minOf((CHUNK + TAG_BYTES).toLong(), fileLength - start).toInt()
             if (length < TAG_BYTES) throw EOFException("Encrypted file cut off")
             raf.seek(start)
             raf.readFully(sealed, 0, length)
             val last = start + length >= fileLength
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BYTES * 8, iv(header, index)))
             cipher.updateAAD(header)
             cipher.updateAAD(byteArrayOf(if (last) 1 else 0))
-            java.util.Arrays.fill(plain, 0)
-            plain = try {
-                cipher.doFinal(sealed, 0, length)
+            chunk.wipe()
+            // Room for the whole sealed length: some providers ask for it before removing the tag.
+            if (chunk.plain.size < length) chunk.plain = ByteArray(length)
+            chunk.plainLen = try {
+                cipher.doFinal(sealed, 0, length, chunk.plain, 0)
             } catch (e: Exception) {
+                chunk.wipe()
                 throw IOException("Encrypted chunk $index failed to authenticate", e)
             }
-            plainIndex = index
+            chunk.index = index
         }
 
         override fun close() {
-            java.util.Arrays.fill(plain, 0)
-            plainIndex = -1
+            for (chunk in slots) chunk.wipe()
             raf.close()
         }
     }
 
-    private fun seal(key: SecretKey, header: ByteArray, index: Int, last: Boolean, data: ByteArray, len: Int): ByteArray {
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+    /** Seals [len] bytes of [data] into [out] (at least `len + TAG_BYTES` long); returns the length. */
+    private fun seal(
+        cipher: Cipher,
+        key: SecretKey,
+        header: ByteArray,
+        index: Int,
+        last: Boolean,
+        data: ByteArray,
+        len: Int,
+        out: ByteArray,
+    ): Int {
         cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(TAG_BYTES * 8, iv(header, index)))
         cipher.updateAAD(header)
         cipher.updateAAD(byteArrayOf(if (last) 1 else 0))
-        return cipher.doFinal(data, 0, len)
+        return cipher.doFinal(data, 0, len, out, 0)
     }
 
     private fun iv(header: ByteArray, index: Int): ByteArray {
@@ -236,7 +281,9 @@ object EncryptedFormat {
         private val header: ByteArray,
     ) : InputStream() {
         private val sealed = ByteArray(CHUNK + TAG_BYTES)
+        private val cipher: Cipher by lazy(LazyThreadSafetyMode.NONE) { Cipher.getInstance("AES/GCM/NoPadding") }
         private var plain = ByteArray(0)
+        private var plainLen = 0
         private var pos = 0
         private var index = 0
         private var finished = false
@@ -248,36 +295,42 @@ object EncryptedFormat {
             val peek = source.read()
             val last = peek < 0
             if (!last) source.unread(peek)
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BYTES * 8, iv(header, index)))
             cipher.updateAAD(header)
             cipher.updateAAD(byteArrayOf(if (last) 1 else 0))
-            plain = try {
-                cipher.doFinal(sealed, 0, n)
+            pos = 0
+            plainLen = 0
+            // Room for the whole sealed length: some providers ask for it before removing the tag.
+            if (plain.size < n) {
+                java.util.Arrays.fill(plain, 0)
+                plain = ByteArray(n)
+            }
+            plainLen = try {
+                cipher.doFinal(sealed, 0, n, plain, 0)
             } catch (e: Exception) {
+                java.util.Arrays.fill(plain, 0)
                 throw IOException("Encrypted chunk $index failed to authenticate", e)
             }
-            pos = 0
             index++
             if (last) finished = true
             return true
         }
 
         override fun read(): Int {
-            while (pos >= plain.size) if (!fill()) return -1
+            while (pos >= plainLen) if (!fill()) return -1
             return plain[pos++].toInt() and 0xFF
         }
 
         override fun read(b: ByteArray, off: Int, len: Int): Int {
             if (len == 0) return 0
-            while (pos >= plain.size) if (!fill()) return -1
-            val n = minOf(len, plain.size - pos)
+            while (pos >= plainLen) if (!fill()) return -1
+            val n = minOf(len, plainLen - pos)
             System.arraycopy(plain, pos, b, off, n)
             pos += n
             return n
         }
 
-        override fun available(): Int = plain.size - pos
+        override fun available(): Int = plainLen - pos
 
         override fun close() {
             java.util.Arrays.fill(plain, 0)

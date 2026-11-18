@@ -141,7 +141,8 @@ internal fun PhoneFlowPreview(
     height: Dp = 112.dp,
 ) {
     val colors = previewColors()
-    val time: State<Float>? = if (LocalLightMode.current) {
+    val onScreen = rememberPreviewOnScreen()
+    val time: State<Float>? = if (LocalLightMode.current || !onScreen.value) {
         null
     } else {
         rememberInfiniteTransition(label = "phoneFlow").animateFloat(
@@ -151,7 +152,7 @@ internal fun PhoneFlowPreview(
             label = "phoneFlowTime",
         )
     }
-    Canvas(modifier.size(width, height)) {
+    Canvas(modifier.size(width, height).then(onScreen.modifier)) {
         val t = time?.value ?: 0.6f
         val screen = drawDevice(PreviewDevice.PHONE, colors)
         val u = 1.dp.toPx()

@@ -250,6 +250,10 @@ object FolderDeleteQueue {
             publish(running = true)
             markHandled(app, folder.albumId, batch)
         }
+        if (!folder.cancelled && failed == 0 && removeEmptyFolders(folder.allItems)) {
+            // Its tile goes at once, not after the next read of the folders with other files.
+            repository.dropOtherFolder(folder.albumId)
+        }
         repository.requestRefresh()
         return FolderDeleteResult(
             albumId = folder.albumId,
@@ -260,6 +264,17 @@ object FolderDeleteQueue {
             failed = failed,
             cancelled = folder.cancelled && done < folder.total,
         )
+    }
+
+    /** The folders the files were in, once nothing at all is left in them (no hidden files either). */
+    /** @return true when none of those folders is left. */
+    private fun removeEmptyFolders(items: List<GalleryMedia>): Boolean {
+        val dirs = items.mapNotNullTo(HashSet()) { item -> item.absolutePath?.let { File(it).parentFile } }
+        for (dir in dirs) {
+            val left = dir.list() ?: continue
+            if (left.isEmpty() && dir.delete()) AppLog.event("Action") { "folderDelete removed empty folder ${dir.name}" }
+        }
+        return dirs.isNotEmpty() && dirs.none { it.exists() }
     }
 
     /** All queue file writes go through [fileScope], one at a time, each with the newest state. */

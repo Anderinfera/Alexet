@@ -265,14 +265,21 @@ private suspend fun loadThumbnail(
                     if (file.length() <= 48L * 1024L * 1024L) {
                         val key = SecureFolderManager.getActiveKeyForFile(file)
                         if (key != null) {
-                            val bytes = dev.ander.alexet.data.SecureRamCache.getOrDecrypt(file, key, cache = false)
-                            if (bytes != null) {
-                                val bmp = try {
-                                    videoFrameFromBytes(bytes, sizePx, data.id)
-                                } finally {
-                                    java.util.Arrays.fill(bytes, 0.toByte())
-                                }
+                            // Chunked files are decrypted only where the retriever reads.
+                            val reader = runCatching { dev.ander.alexet.data.EncryptedFormat.openRandomAccess(file, key, cachedChunks = 2) }.getOrNull()
+                            if (reader != null) {
+                                val bmp = videoFrameFromEncrypted(reader, sizePx, data.id)
                                 if (bmp != null) return LoadedThumb(bmp, madeHere = false)
+                            } else {
+                                val bytes = dev.ander.alexet.data.SecureRamCache.getOrDecrypt(file, key, cache = false)
+                                if (bytes != null) {
+                                    val bmp = try {
+                                        videoFrameFromBytes(bytes, sizePx, data.id)
+                                    } finally {
+                                        java.util.Arrays.fill(bytes, 0.toByte())
+                                    }
+                                    if (bmp != null) return LoadedThumb(bmp, madeHere = false)
+                                }
                             }
                         }
                     }
@@ -529,6 +536,29 @@ private fun videoFrameFromBytes(bytes: ByteArray, sizePx: Int, id: Long): Bitmap
     }.getOrNull()
 }
 
+/** Like [videoFrameFromBytes], reading a chunked private file in place; closes [reader]. */
+private fun videoFrameFromEncrypted(reader: dev.ander.alexet.data.EncryptedFormat.RandomAccessReader, sizePx: Int, id: Long): Bitmap? {
+    val source = runCatching { dev.ander.alexet.data.Mp4MetaRepair.dataSourceFor(reader) }
+        .getOrElse {
+            runCatching { reader.close() }
+            return null
+        }
+    return try {
+        runCatching {
+            val retriever = MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(source)
+                VideoDurationCache.record(id, retriever)
+                extractVideoFrame(retriever, sizePx)
+            } finally {
+                runCatching { retriever.release() }
+            }
+        }.getOrNull()
+    } finally {
+        runCatching { source.close() }
+    }
+}
+
 private suspend fun decodeSampled(resolver: ContentResolver, uri: Uri, sizePx: Int): Bitmap? {
     fallbackDecodeSemaphore.acquire()
     try {
@@ -704,6 +734,11 @@ internal fun orientByExif(bitmap: Bitmap, exif: () -> android.media.ExifInterfac
     val orientation = runCatching {
         exif()?.getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_NORMAL)
     }.getOrNull() ?: return bitmap
+    return orientByExif(bitmap, orientation)
+}
+
+/** [bitmap] turned upright by an EXIF [orientation] already read; the same bitmap when it is plain. */
+internal fun orientByExif(bitmap: Bitmap, orientation: Int): Bitmap {
     val ops = dev.ander.alexet.data.ImageEditEngine.exifOrientationOps(orientation)
     if (ops.isEmpty()) return bitmap
     val matrix = android.graphics.Matrix()

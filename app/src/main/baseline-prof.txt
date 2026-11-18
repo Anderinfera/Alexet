@@ -20,3 +20,13 @@ HSPLandroidx/collection/**->**(**)**
 HSPLandroidx/window/**->**(**)**
 HSPLokio/**->**(**)**
 HSPLandroidx/exifinterface/**->**(**)**
+HSPLandroidx/media3/exoplayer/**->**(**)**
+Landroidx/media3/exoplayer/**;
+HSPLandroidx/media3/common/**->**(**)**
+Landroidx/media3/common/**;
+HSPLandroidx/media3/ui/**->**(**)**
+Landroidx/media3/ui/**;
+HSPLandroidx/media3/datasource/**->**(**)**
+Landroidx/media3/datasource/**;
+HSPLandroidx/media3/extractor/mp4/**->**(**)**
+Landroidx/media3/extractor/mp4/**;

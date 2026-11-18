@@ -162,29 +162,79 @@ object Mp4MetaRepair {
     }
 
     /** Patching source over decrypted bytes (private folders). */
-    fun dataSourceFor(bytes: ByteArray): MediaDataSource {
-        val patches = runCatching {
-            findBrokenMeta(bytes.size.toLong()) { position, buf, len ->
-                if (position >= bytes.size) {
-                    -1
-                } else {
-                    val n = minOf(len.toLong(), bytes.size - position).toInt()
-                    System.arraycopy(bytes, position.toInt(), buf, 0, n)
-                    n
-                }
+    fun dataSourceFor(bytes: ByteArray): MediaDataSource =
+        RepairingSource(bytes.size.toLong(), onClose = {}) { position, buf, offset, len ->
+            if (position >= bytes.size) {
+                -1
+            } else {
+                val n = minOf(len.toLong(), bytes.size - position).toInt()
+                System.arraycopy(bytes, position.toInt(), buf, offset, n)
+                n
             }
-        }.getOrDefault(NO_PATCHES)
-        return object : MediaDataSource() {
-            override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
-                if (position >= bytes.size) return -1
-                val n = minOf(size.toLong(), bytes.size - position).toInt()
-                System.arraycopy(bytes, position.toInt(), buffer, offset, n)
-                if (patches.isNotEmpty()) applyPatches(patches, position, buffer, offset, n)
-                return n
-            }
+        }
 
-            override fun getSize(): Long = bytes.size.toLong()
-            override fun close() {}
+    /**
+     * Patching source over a private file in the chunked format, decrypted only where read (the
+     * `moov` box and the first frames, not the whole video). Closing the source closes [reader].
+     */
+    fun dataSourceFor(reader: EncryptedFormat.RandomAccessReader): MediaDataSource =
+        RepairingSource(reader.size, onClose = reader::close) { position, buf, offset, len ->
+            if (position >= reader.size) {
+                -1
+            } else if (len == 0) {
+                0
+            } else {
+                // Same answer as the byte array: everything up to [len] or the end.
+                var done = 0
+                while (done < len) {
+                    val n = reader.read(position + done, buf, offset + done, len - done)
+                    if (n <= 0) break
+                    done += n
+                }
+                if (done == 0) -1 else done
+            }
+        }
+
+    /** Positioned read into [buf] at [offset]; returns bytes read (< 1 at end of data). */
+    private fun interface RangeReader {
+        fun read(position: Long, buf: ByteArray, offset: Int, len: Int): Int
+    }
+
+    /**
+     * Patching source over [source]. The retriever calls it from a native thread, so reads and
+     * close hold the lock; a read that fails (a tampered chunk) gives -1.
+     */
+    private class RepairingSource(
+        private val length: Long,
+        private val onClose: () -> Unit,
+        private val source: RangeReader,
+    ) : MediaDataSource() {
+        private var closed = false
+        private val patches: LongArray = synchronized(this) {
+            runCatching {
+                findBrokenMeta(length) { position, buf, len -> source.read(position, buf, 0, len) }
+            }.getOrDefault(NO_PATCHES)
+        }
+
+        @Synchronized
+        override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+            if (closed) return -1
+            val n = try {
+                source.read(position, buffer, offset, size)
+            } catch (e: Exception) {
+                return -1
+            }
+            if (n > 0 && patches.isNotEmpty()) applyPatches(patches, position, buffer, offset, n)
+            return n
+        }
+
+        override fun getSize(): Long = length
+
+        @Synchronized
+        override fun close() {
+            if (closed) return
+            closed = true
+            onClose()
         }
     }
 

@@ -61,7 +61,7 @@ data class GalleryMedia(
     /** Not a photo or video (a document, an archive, an app…): shown with "See all files", opened outside. */
     val isOtherFile: Boolean = false,
 ) {
-    val isVideo: Boolean = mimeType.startsWith("video/", ignoreCase = true) || NomediaScanner.mimeOf(displayName)?.startsWith("video/", ignoreCase = true) == true
+    val isVideo: Boolean = mimeType.startsWith("video/", ignoreCase = true) || NomediaScanner.isVideoName(displayName)
     val capturedAtMs: Long
         get() {
             if (dateTakenMs > 0L) return dateTakenMs
@@ -97,6 +97,8 @@ data class Album(
     val latestAddedMs: Long = 0L,
     val legacyBucketIds: Set<Long> = emptySet(),
     val isSecure: Boolean = false,
+    /** Other files (documents, apps…) the folder also shows, next to [itemCount]: "20 (+5)". */
+    val otherCount: Int = 0,
 )
 
 @Immutable

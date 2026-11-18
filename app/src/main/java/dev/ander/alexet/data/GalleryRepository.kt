@@ -220,6 +220,11 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
     /** Bumped by optimistic move/delete patches; a full refresh started before a bump is stale. */
     private val mutationEpoch = java.util.concurrent.atomic.AtomicInteger(0)
     /**
+     * Moves running now. Each moved file bumps [mutationEpoch], so a sync during a move would be
+     * discarded and repeated; change syncs wait for 0 instead (notifications keep accumulating).
+     */
+    private val movesInFlight = MutableStateFlow(0)
+    /**
      * Held while a sync result is checked against [mutationEpoch] and published, and while a patch
      * bumps the epoch and changes the list: either the result goes out first and the patch lands on
      * it, or the result sees the new epoch and is dropped. Both steps are short.
@@ -315,6 +320,12 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
     private val indexMutex = kotlinx.coroutines.sync.Mutex()
     /** Rows exactly as last written to [mediaIndex]; the journal diffs published lists against it. */
     private var persisted: HashMap<Long, GalleryMedia> = HashMap()
+    /**
+     * The index may hold rows that differ from [persisted] (a write stopped part-way, a type
+     * corrected on load): the next full sync rewrites it whole instead of writing a difference.
+     * Guarded by [indexMutex].
+     */
+    private var persistedDiverged = false
     @Volatile private var indexReady = false
     private val _currentMedia = MutableStateFlow<List<GalleryMedia>>(emptyList())
     val media: StateFlow<List<GalleryMedia>> = _currentMedia.asStateFlow()
@@ -828,8 +839,13 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                 }
             }
             FileObserver.MODIFY -> {
-                if (!target.isDirectory && !isOwnWrite(target.absolutePath)) {
-                    downloadTracker.onModified(target.absolutePath)
+                // Comes for every write: the name checks first, then one stat for type and size.
+                val p = target.absolutePath
+                if (DownloadMediaFilter.isMediaDownload(p) && !isOwnWrite(p)) {
+                    val attrs = DirSnapshotCache.attributesOf(target)
+                    if (attrs == null || !attrs.isDirectory) {
+                        downloadTracker.onModified(p, attrs?.takeIf { it.isRegularFile }?.size())
+                    }
                 }
             }
             FileObserver.CLOSE_WRITE -> {
@@ -1351,11 +1367,10 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         return null
     }
 
-    private fun albumRelativePath(dest: Album): String {
-        val dir = directoryForAlbum(dest)
+    private fun albumRelativePath(dest: Album, dir: File? = directoryForAlbum(dest)): String {
         if (dir != null) {
-            val root = Environment.getExternalStorageDirectory()
-            val rel = dir.relativeToOrNull(root)?.path?.replace('\\', '/')?.trim('/')
+            // Relative to the folder's own storage: an SD card folder is "Gallery/x/", never "../../6FFF-B5B1/…".
+            val rel = StoragePaths.pathOnItsVolume(dir.absolutePath, Environment.getExternalStorageDirectory().absolutePath)
             if (!rel.isNullOrBlank()) return "$rel/"
         }
         val raw = dest.relativePath.ifBlank {
@@ -1382,9 +1397,13 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         val result = buildSet {
             for (dest in destinations) {
                 val isAnon = dest.id in anonymousFolderIds
+                // Looked up once per destination; again for each file while the folder does not
+                // exist yet (the first copy creates it).
+                var folder: CopyFolder? = null
                 for (item in items.filter { it.bucketId != dest.id }) {
                     if (downloadTracker.isActive(item.absolutePath)) continue
-                    val copiedFile = copyOne(item, dest, isAnon, randomizeFileNames, stripExif, treeScanDirs)
+                    val destFolder = folder ?: copyFolderOf(dest).also { if (it.dir != null) folder = it }
+                    val copiedFile = copyOne(item, dest, destFolder, isAnon, randomizeFileNames, stripExif, treeScanDirs)
                     current++
                     onProgress(current, total)
                     if (copiedFile != null) {
@@ -1414,6 +1433,21 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         result
     }
 
+    /** Files written outside the usual operations (an unpacked archive): scanned, then shown. */
+    fun showNewFiles(paths: List<String>) {
+        scanThenRefresh(paths.toTypedArray())
+        scheduleOtherFilesRefresh()
+    }
+
+    /** Scans [paths] and asks for one refresh when the last of them is scanned (not one per file). */
+    private fun scanThenRefresh(paths: Array<String>) {
+        if (paths.isEmpty()) return
+        val remaining = java.util.concurrent.atomic.AtomicInteger(paths.size)
+        MediaScannerConnection.scanFile(appContext, paths, null) { _, _ ->
+            if (remaining.decrementAndGet() == 0) requestRefresh()
+        }
+    }
+
     /** Post-operation refresh: a delta sync, falling back to the debounced refresh on failure. */
     private suspend fun syncAfterOperation() {
         val published = runCatching { syncFromMediaStore(full = false) }
@@ -1425,17 +1459,36 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         if (!published) requestRefresh()
     }
 
+    /** A copy destination's folder as [copyOne] needs it. */
+    private class CopyFolder(
+        val dir: File?,
+        val relativePath: String,
+        val onOtherVolume: Boolean,
+        val hasNomedia: Boolean,
+    )
+
+    private fun copyFolderOf(dest: Album): CopyFolder {
+        val dir = directoryForAlbum(dest)
+        return CopyFolder(
+            dir = dir,
+            relativePath = albumRelativePath(dest, dir),
+            onOtherVolume = dir != null && StoragePaths.pathInside(dir, Environment.getExternalStorageDirectory()) == null,
+            hasNomedia = dir != null && File(dir, ".nomedia").exists(),
+        )
+    }
+
     private fun copyOne(
         item: GalleryMedia,
         dest: Album,
+        folder: CopyFolder,
         isAnonymous: Boolean = false,
         randomizeFileNames: Boolean = true,
         stripExif: Boolean = true,
         treeScanDirs: MutableSet<File>,
     ): File? {
-        val albumDir = directoryForAlbum(dest)
+        val albumDir = folder.dir
         val destDir = albumDir
-            ?: File(Environment.getExternalStorageDirectory(), albumRelativePath(dest).trim().trim('/'))
+            ?: File(Environment.getExternalStorageDirectory(), folder.relativePath.trim().trim('/'))
         val baseName = if (isAnonymous && randomizeFileNames) ExifUtils.generateAnonymousFileName(item.displayName) else item.displayName
         val uniqueTarget = resolveUniqueTargetFile(destDir, baseName)
         markOwnWrite(uniqueTarget)
@@ -1487,12 +1540,11 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                 tempTarget?.let { StartupRecovery.donePartial(appContext, it) }
             }
         }
-        val onOtherVolume = albumDir != null && albumDir.relativeToOrNull(Environment.getExternalStorageDirectory()) == null
         // A document or an app cannot go into MediaStore's photo / video tables.
-        if (item.isOtherFile || (albumDir != null && (dest.isHidden || onOtherVolume || File(albumDir, ".nomedia").exists()))) {
+        if (item.isOtherFile || (albumDir != null && (dest.isHidden || folder.onOtherVolume || folder.hasNomedia))) {
             return copyByFile()
         }
-        val relative = albumRelativePath(dest)
+        val relative = folder.relativePath
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, uniqueTarget.name)
             put(MediaStore.MediaColumns.MIME_TYPE, item.mimeType)
@@ -1783,10 +1835,12 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                 }
                 // A row the provider removed itself needs no scan.
                 if (isFileDeleted && !isProviderDeleted) toScan += path
+                // Deleting the file by its path already removes its MediaStore row on newer Androids:
+                // the provider then deletes nothing, yet the file is gone (it counted as a failure).
                 if (providerFailed) {
                     false
                 } else {
-                    isProviderDeleted || (isFileDeleted && !item.uri.toString().startsWith("content://media/"))
+                    isProviderDeleted || isFileDeleted
                 }
             } else {
                 try {
@@ -1851,13 +1905,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                 finishOwnWrite(target)
                 patchRenamed(item.id, safeName, target.absolutePath)
                 if (notifyScan) {
-                    MediaScannerConnection.scanFile(
-                        appContext,
-                        arrayOf(source.absolutePath, target.absolutePath),
-                        null,
-                    ) { _, _ ->
-                        requestRefresh()
-                    }
+                    scanThenRefresh(arrayOf(source.absolutePath, target.absolutePath))
                     // The renamed file is scanned above; the whole folder only when it is hidden.
                     val dir = target.parentFile ?: target
                     if (File(dir, ".nomedia").exists()) nomediaScanner.rescanTree(dir)
@@ -2053,13 +2101,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         }
 
         if (newlyRenamedFiles.isNotEmpty()) {
-            MediaScannerConnection.scanFile(
-                appContext,
-                newlyRenamedFiles.map { it.absolutePath }.toTypedArray(),
-                null,
-            ) { _, _ ->
-                requestRefresh()
-            }
+            scanThenRefresh(newlyRenamedFiles.map { it.absolutePath }.toTypedArray())
         }
         requestRefresh()
 
@@ -2225,6 +2267,8 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
      */
     suspend fun renameToNumericOrder(
         itemsInOrder: List<GalleryMedia>,
+        /** The first item's number (a numbered folder renames only the files from a changed place on). */
+        startAt: Int = 1,
         onProgress: (current: Int, total: Int) -> Unit = { _, _ -> },
     ): Pair<Int, List<GalleryMedia>> = renameBatch(Dispatchers.IO + kotlinx.coroutines.NonCancellable) {
         if (itemsInOrder.isEmpty()) return@renameBatch 0 to emptyList()
@@ -2237,7 +2281,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
             val path = item.absolutePath ?: fileForMedia(item)?.absolutePath ?: return@any false
             val parent = File(path).parentFile ?: return@any false
             val ext = item.displayName.substringAfterLast('.', missingDelimiterValue = "")
-            val n = index + 1
+            val n = index + startAt
             val finalName = if (ext.isNotEmpty()) "$n.$ext" else "$n"
             val target = File(parent, finalName)
             target.exists() && runCatching { target.canonicalPath }.getOrNull() !in currentCanonicalPaths
@@ -2281,7 +2325,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         val newlyRenamedFiles = ArrayList<File>()
         for (step in temps) {
             val ext = step.originalName.substringAfterLast('.', missingDelimiterValue = "")
-            val n = step.orderIndex + 1
+            val n = step.orderIndex + startAt
             val finalName = if (ext.isNotEmpty()) "$n.$ext" else "$n"
             if (rename(step.media, finalName, notifyScan = false)) {
                 success++
@@ -2312,13 +2356,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
             }
         }
         if (newlyRenamedFiles.isNotEmpty()) {
-            MediaScannerConnection.scanFile(
-                appContext,
-                newlyRenamedFiles.map { it.absolutePath }.toTypedArray(),
-                null,
-            ) { _, _ ->
-                requestRefresh()
-            }
+            scanThenRefresh(newlyRenamedFiles.map { it.absolutePath }.toTypedArray())
         }
         if (stepCount < totalSteps) {
             onProgress(totalSteps, totalSteps)
@@ -2481,13 +2519,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         }
 
         if (newlyRenamedFiles.isNotEmpty()) {
-            MediaScannerConnection.scanFile(
-                appContext,
-                newlyRenamedFiles.map { it.absolutePath }.toTypedArray(),
-                null,
-            ) { _, _ ->
-                requestRefresh()
-            }
+            scanThenRefresh(newlyRenamedFiles.map { it.absolutePath }.toTypedArray())
         }
 
         successCount to failed
@@ -2520,7 +2552,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         }
         RenameJournal.remove(pending.mapNotNull { it.temp.absolutePath?.let(::File) })
         if (scan.isNotEmpty()) {
-            MediaScannerConnection.scanFile(appContext, scan.toTypedArray(), null) { _, _ -> requestRefresh() }
+            scanThenRefresh(scan.toTypedArray())
         }
         done
     }
@@ -2563,6 +2595,66 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         val ext = item.displayName.substringAfterLast('.', missingDelimiterValue = "")
         val base = "__alexet_tmp_${item.id}_${System.nanoTime()}_$salt"
         return if (ext.isNotEmpty()) "$base.$ext" else base
+    }
+
+    /**
+     * Moves [srcFile] to [wanted] on another storage: a copy (through a hidden temporary file), then
+     * the original and its MediaStore row are deleted. Returns where it went (another name when the
+     * storage refused this one), or null. When the original can't be deleted the copy goes too, so a
+     * failed move never leaves the file twice.
+     */
+    private fun moveAcrossVolumes(item: GalleryMedia, srcFile: File, wanted: File, stripExif: Boolean): File? {
+        val target = copyAcrossVolumes(srcFile, wanted)
+            ?: StoragePaths.storageSafeName(wanted.name).takeIf { it != wanted.name }?.let { safeName ->
+                // Some SD cards (exFAT on older phones) refuse emoji in names: the file goes without them.
+                val dir = wanted.parentFile ?: return null
+                val alt = synchronized(fileNameLock) { resolveUniqueTargetFile(dir, safeName) }
+                markOwnWrite(alt)
+                copyAcrossVolumes(srcFile, alt)
+            }
+            ?: return null
+        if (stripExif && !item.isOtherFile) ExifUtils.stripExifExceptDate(target)
+        // The file keeps its date, as after a rename.
+        target.setLastModified(srcFile.lastModified())
+        val isRow = item.uri.scheme == "content"
+        if (!srcFile.delete() && isRow) {
+            try {
+                resolver.delete(item.uri, null, null)
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                rememberRecoverable(e)
+            }
+        }
+        if (srcFile.exists()) {
+            target.delete()
+            return null
+        }
+        // The row of the deleted original (a scan of its path would drop it as well).
+        if (isRow) runCatching { resolver.delete(item.uri, null, null) }
+        return target
+    }
+
+    /** [srcFile] copied to [target] through a hidden temporary file; null (and nothing left) when that fails. */
+    private fun copyAcrossVolumes(srcFile: File, target: File): File? {
+        val temp = File(target.parentFile, ".tmp_${System.currentTimeMillis()}_${target.name}")
+        StartupRecovery.notePartial(appContext, temp)
+        try {
+            srcFile.inputStream().use { inp ->
+                temp.outputStream().use { out -> inp.copyTo(out, COPY_BUFFER_BYTES) }
+            }
+            if (temp.length() != srcFile.length() || !temp.renameTo(target)) {
+                temp.delete()
+                return null
+            }
+            return target
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            AppLog.w("GalleryRepository", "Copy to another storage failed: ${target.name}", e)
+            temp.delete()
+            return null
+        } finally {
+            StartupRecovery.donePartial(appContext, temp)
+        }
     }
 
     private fun moveOne(
@@ -2614,6 +2706,12 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                         runCatching { resolver.notifyChange(item.uri, null) }
                     }
                     return target to srcFile
+                }
+                // Another storage (main ↔ SD card): neither a rename nor MediaStore moves a file across,
+                // MediaStore would put it on the source's storage instead. Copy, then delete the original.
+                val primaryRoot = Environment.getExternalStorageDirectory().absolutePath
+                if (!StoragePaths.sameVolume(srcFile.absolutePath, destDir.absolutePath, primaryRoot)) {
+                    return moveAcrossVolumes(item, srcFile, target, isAnonymous && stripExif)?.let { it to srcFile }
                 }
             }
         }
@@ -2696,61 +2794,67 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
             }
         }
 
+        // Change syncs wait until this move is done (released in finally: also when it fails or is cancelled).
+        movesInFlight.update { it + 1 }
         try {
-            for (item in validItems) {
-                if (downloadTracker.isActive(item.absolutePath)) continue
-                val pair = moveOne(item, dest, destDir, relative, isAnonymous, randomizeFileNames, stripExif)
-                current++
-                onProgress(current, total)
-                if (pair == null) continue
+            try {
+                for (item in validItems) {
+                    if (downloadTracker.isActive(item.absolutePath)) continue
+                    val pair = moveOne(item, dest, destDir, relative, isAnonymous, randomizeFileNames, stripExif)
+                    current++
+                    onProgress(current, total)
+                    if (pair == null) continue
 
-                val (targetFile, srcFile) = pair
-                finishOwnWrite(targetFile)
-                moved += item.id
-                if (destIsHidden) {
-                    touchedNomedia = true
-                }
-                scanPaths += targetFile.absolutePath
-                if (srcFile != null && srcFile.absolutePath != targetFile.absolutePath) {
-                    scanPaths += srcFile.absolutePath
-                    srcFile.parentFile?.let { srcDirsToRescan += it }
-                }
-                item.absolutePath?.let { scanPaths += it }
+                    val (targetFile, srcFile) = pair
+                    finishOwnWrite(targetFile)
+                    moved += item.id
+                    if (destIsHidden) {
+                        touchedNomedia = true
+                    }
+                    scanPaths += targetFile.absolutePath
+                    if (srcFile != null && srcFile.absolutePath != targetFile.absolutePath) {
+                        scanPaths += srcFile.absolutePath
+                        srcFile.parentFile?.let { srcDirsToRescan += it }
+                    }
+                    item.absolutePath?.let { scanPaths += it }
 
-                val newAbsPath = targetFile.absolutePath
-                pendingMoves[item.id] = PendingMove(
-                    oldMediaId = item.id,
-                    srcBucketId = item.bucketId,
-                    destBucketId = dest.id,
-                    destBucketName = dest.name,
-                    destRelativePath = relative,
-                    destAbsolutePath = newAbsPath,
-                    destRawBucketId = destRawBucketId,
-                    displayName = targetFile.name,
-                    srcDisplayName = item.displayName,
-                    srcAbsolutePath = (srcFile?.absolutePath ?: item.absolutePath)?.lowercase(),
-                )
-                mutationEpoch.incrementAndGet()
-                movedUpdates[item.id] = Triple(relative, newAbsPath, targetFile.name)
-                if (stampSelectionOrderMtimes) {
-                    orderedMovedTargets += targetFile
-                }
+                    val newAbsPath = targetFile.absolutePath
+                    pendingMoves[item.id] = PendingMove(
+                        oldMediaId = item.id,
+                        srcBucketId = item.bucketId,
+                        destBucketId = dest.id,
+                        destBucketName = dest.name,
+                        destRelativePath = relative,
+                        destAbsolutePath = newAbsPath,
+                        destRawBucketId = destRawBucketId,
+                        displayName = targetFile.name,
+                        srcDisplayName = item.displayName,
+                        srcAbsolutePath = (srcFile?.absolutePath ?: item.absolutePath)?.lowercase(),
+                    )
+                    mutationEpoch.incrementAndGet()
+                    movedUpdates[item.id] = Triple(relative, newAbsPath, targetFile.name)
+                    if (stampSelectionOrderMtimes) {
+                        orderedMovedTargets += targetFile
+                    }
 
-                // Optimistic UI in batches (see publishMoved).
-                synchronized(batchLock) {
-                    if (pendingUi.isEmpty()) batchStartedAt = android.os.SystemClock.elapsedRealtime()
-                    pendingUi += MovedForUi(item, newAbsPath, targetFile.name)
-                    if (pendingUi.size >= batchSize) publishBatch()
+                    // Optimistic UI in batches (see publishMoved).
+                    synchronized(batchLock) {
+                        if (pendingUi.isEmpty()) batchStartedAt = android.os.SystemClock.elapsedRealtime()
+                        pendingUi += MovedForUi(item, newAbsPath, targetFile.name)
+                        if (pendingUi.size >= batchSize) publishBatch()
+                    }
                 }
+            } finally {
+                // Also when stopped part-way: the files already moved are shown where they are.
+                batchTimer.cancel()
+                synchronized(batchLock) { publishBatch() }
+            }
+
+            if (stampSelectionOrderMtimes && orderedMovedTargets.isNotEmpty()) {
+                applySelectionOrderModifiedDates(orderedMovedTargets)
             }
         } finally {
-            // Also when stopped part-way: the files already moved are shown where they are.
-            batchTimer.cancel()
-            synchronized(batchLock) { publishBatch() }
-        }
-
-        if (stampSelectionOrderMtimes && orderedMovedTargets.isNotEmpty()) {
-            applySelectionOrderModifiedDates(orderedMovedTargets)
+            movesInFlight.update { it - 1 }
         }
 
         ioScope.launch {
@@ -2846,7 +2950,10 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
     /** Folders whose other files are listed; listed again after file operations and disk changes. */
     private val otherFileDirs = java.util.concurrent.ConcurrentHashMap<Long, OtherDir>()
     private val otherRefreshLock = Any()
-    private var otherRefreshJob: Job? = null
+    /** When the pending other-files listing runs (elapsedRealtime); pushed back by each request. */
+    @Volatile private var otherRefreshDueAt = 0L
+    /** A listing job is waiting for [otherRefreshDueAt] (guarded by [otherRefreshLock]). */
+    private var otherRefreshWaiting = false
 
     private val _fileTableChanges = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     /**
@@ -2924,6 +3031,12 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         otherFileDirs.remove(albumId)
     }
 
+    /** The folder is gone from the disk: its tile among the folders with other files goes too. */
+    fun dropOtherFolder(albumId: Long) {
+        forgetOtherFiles(albumId)
+        _otherFolders.update { list -> if (list.any { it.id == albumId }) list.filterNot { it.id == albumId } else list }
+    }
+
     /** The folder no longer shows other files: its list goes. */
     fun forgetOtherFiles(albumId: Long) {
         otherFileDirs.remove(albumId)
@@ -2942,9 +3055,27 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
     fun scheduleOtherFilesRefresh() {
         if (otherFileDirs.isEmpty()) return
         synchronized(otherRefreshLock) {
-            otherRefreshJob?.cancel()
-            otherRefreshJob = ioScope.launch {
-                delay(OTHER_FILES_REFRESH_MS)
+            // Trailing: runs OTHER_FILES_REFRESH_MS after the last request. A burst of events only
+            // moves the deadline instead of cancelling and launching a job for each one.
+            otherRefreshDueAt = android.os.SystemClock.elapsedRealtime() + OTHER_FILES_REFRESH_MS
+            if (otherRefreshWaiting) return
+            otherRefreshWaiting = true
+            ioScope.launch {
+                try {
+                    while (true) {
+                        val left = synchronized(otherRefreshLock) {
+                            (otherRefreshDueAt - android.os.SystemClock.elapsedRealtime()).also {
+                                if (it <= 0L) otherRefreshWaiting = false
+                            }
+                        }
+                        if (left <= 0L) break
+                        delay(left)
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    // Cancelled while waiting: the next request starts a new job.
+                    synchronized(otherRefreshLock) { otherRefreshWaiting = false }
+                    throw e
+                }
                 val fresh = otherFileDirs.mapValues { (id, d) -> OtherFiles.list(d.dir, id, d.name, d.relativePath) }
                 _otherFiles.update { map ->
                     var changed = false
@@ -3626,7 +3757,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
             if (!applyQueryResult(fresh, publish)) return@withLock false
             val indexStartedAt = android.os.SystemClock.elapsedRealtime()
             indexMutex.withLock {
-                mediaIndex.applyDelta(upserts, deleted, generations, pauseBetweenChunks = pause)
+                indexWrite { mediaIndex.applyDelta(upserts, deleted, generations, pauseBetweenChunks = pause) }
                 deleted.forEach { persisted.remove(it) }
                 upserts.forEach { persisted[it.id] = it }
             }
@@ -3659,21 +3790,41 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         val fresh = marked.rows
         val now = System.currentTimeMillis()
         indexMutex.withLock {
-            if (background) {
-                // Chunked so a process kill mid-way keeps a consistent (older) index.
-                val freshIds = fresh.mapTo(HashSet(fresh.size)) { it.id }
-                val stale = persisted.keys.filter { it !in freshIds }
-                mediaIndex.applyDelta(fresh, stale, generations, fullReconcileAt = now, pauseBetweenChunks = pause)
-            } else {
-                mediaIndex.replaceAll(fresh, generations, now)
+            val freshById = HashMap<Long, GalleryMedia>(fresh.size * 2).also { map -> fresh.forEach { map[it.id] = it } }
+            // `persisted` mirrors the index: only the rows that differ from it are written.
+            val mirrored = indexReady && persisted.isNotEmpty() && !persistedDiverged
+            indexWrite {
+                if (background) {
+                    // Chunked so a process kill mid-way keeps a consistent (older) index.
+                    val stale = persisted.keys.filter { it !in freshById }
+                    val upserts = if (mirrored) MediaIndexLogic.diff(persisted, freshById.values.toList()).upserts else fresh
+                    mediaIndex.applyDelta(upserts, stale, generations, fullReconcileAt = now, pauseBetweenChunks = pause)
+                } else if (mirrored) {
+                    val upserts = MediaIndexLogic.diff(persisted, freshById.values.toList()).upserts
+                    mediaIndex.replaceByDiff(upserts, freshById.keys, generations, now)
+                } else {
+                    mediaIndex.replaceAll(fresh, generations, now)
+                }
             }
-            persisted = HashMap<Long, GalleryMedia>(fresh.size * 2).also { map -> fresh.forEach { map[it.id] = it } }
+            // Every row was written (or compared with a true mirror): the index matches again.
+            persistedDiverged = false
+            persisted = freshById
             indexReady = true
         }
         return true
     }
 
     private suspend fun persistedIsEmpty(): Boolean = indexMutex.withLock { persisted.isEmpty() }
+
+    /** Writes rows to [mediaIndex] (under [indexMutex]); a write that stops part-way marks [persistedDiverged]. */
+    private inline fun <T> indexWrite(block: () -> T): T {
+        try {
+            return block()
+        } catch (e: Throwable) {
+            persistedDiverged = true
+            throw e
+        }
+    }
 
     /** Runs blocking MediaStore work at background thread priority when [enabled]. */
     private inline fun <T> lowPriority(enabled: Boolean, block: () -> T): T {
@@ -3708,7 +3859,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                 )
                 return
             }
-            mediaIndex.applyDelta(diff.upserts, diff.deletes)
+            indexWrite { mediaIndex.applyDelta(diff.upserts, diff.deletes) }
             diff.deletes.forEach { persisted.remove(it) }
             diff.upserts.forEach { persisted[it.id] = it }
         }
@@ -4052,14 +4203,19 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
             refresh.tryEmit(Unit)
         }
 
-        val destFileKeys = store
-            .filter { it.bucketId != AlbumIds.NONE }
-            .map { "${it.bucketId}:${it.displayName.lowercase()}" }
-            .toHashSet()
+        // Only moves read these: built on first use (a delete mask alone needs neither).
+        val destFileKeys by lazy(LazyThreadSafetyMode.NONE) {
+            store
+                .filter { it.bucketId != AlbumIds.NONE }
+                .map { "${it.bucketId}:${it.displayName.lowercase()}" }
+                .toHashSet()
+        }
 
-        val destPaths = store
-            .mapNotNull { it.absolutePath?.lowercase() }
-            .toHashSet()
+        val destPaths by lazy(LazyThreadSafetyMode.NONE) {
+            store
+                .mapNotNull { it.absolutePath?.lowercase() }
+                .toHashSet()
+        }
 
         val srcOrphans = HashSet<String>()
         val srcOrphanPaths = HashSet<String>()
@@ -4069,6 +4225,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
             move.srcAbsolutePath?.let { srcOrphanPaths += it }
         }
 
+        val anySrcOrphans = srcOrphans.isNotEmpty() || srcOrphanPaths.isNotEmpty()
         val handledMoveOldIds = HashSet<Long>()
         val result = ArrayList<GalleryMedia>(store.size + pendingMoves.size)
         for (item in store) {
@@ -4102,10 +4259,12 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                 continue
             }
 
-            val itemSrcKey = "${item.bucketId}:${item.displayName.lowercase()}"
-            val itemPath = item.absolutePath?.lowercase()
-            if (itemSrcKey in srcOrphans || (itemPath != null && itemPath in srcOrphanPaths)) {
-                continue
+            if (anySrcOrphans) {
+                val itemSrcKey = "${item.bucketId}:${item.displayName.lowercase()}"
+                val itemPath = item.absolutePath?.lowercase()
+                if (itemSrcKey in srcOrphans || (itemPath != null && itemPath in srcOrphanPaths)) {
+                    continue
+                }
             }
 
             result += item
@@ -4301,9 +4460,12 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
             val path = item.absolutePath ?: continue
             if (recentlyPublishedWaiting(path)) continue
             val file = File(path)
-            val gone = !file.exists()
-            val differs = !gone && (
-                file.length() != item.sizeBytes || kotlin.math.abs(file.lastModified() - item.dateModifiedMs) > 2_000L
+            // One stat for exists() and length(); the date stays File.lastModified() (its precision
+            // can differ from the stat's on some Android versions).
+            val attrs = DirSnapshotCache.attributesOf(file)
+            val gone = attrs == null
+            val differs = attrs != null && (
+                attrs.size() != item.sizeBytes || kotlin.math.abs(file.lastModified() - item.dateModifiedMs) > 2_000L
                 )
             if (!gone && !differs) continue
             if (!gone && (downloadTracker.isActive(path) || isOwnWrite(path))) continue
@@ -4779,19 +4941,30 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         _seedAlbums.update { current ->
             if (albums.isNotEmpty()) albums else current
         }
+        // One index over the library instead of filtering every row for each cached folder.
+        val index by lazy(LazyThreadSafetyMode.NONE) { FolderRowIndex(merged) }
+        val albumById by lazy(LazyThreadSafetyMode.NONE) {
+            HashMap<Long, Album>(albums.size * 2).also { map -> albums.forEach { map.putIfAbsent(it.id, it) } }
+        }
         _folderMedia.update { currentMap ->
             if (currentMap.isEmpty()) currentMap
             else currentMap.mapValues { (albumId, existing) ->
                 if (isSecureFolderCache(existing)) {
                     return@mapValues existing
                 }
-                val album = albums.firstOrNull { it.id == albumId }
+                val album = albumById[albumId]
                 if (album != null) {
-                    merged.filter {
-                        it.bucketId == albumId ||
-                            (album.legacyBucketIds.isNotEmpty() && it.rawBucketId != 0L && it.rawBucketId in album.legacyBucketIds) ||
-                            (album.relativePath.isNotBlank() && it.relativePath.trim().trim('/').equals(album.relativePath.trim().trim('/'), ignoreCase = true))
-                    }.map { if (it.bucketId != albumId) it.copy(bucketId = albumId) else it }
+                    val rows = if (album.relativePath.isNotBlank() && FolderRowIndex.normalizeRel(album.relativePath).isEmpty()) {
+                        // A path of only slashes matches rows without a path, which the index leaves out.
+                        merged.filter {
+                            it.bucketId == albumId ||
+                                (album.legacyBucketIds.isNotEmpty() && it.rawBucketId != 0L && it.rawBucketId in album.legacyBucketIds) ||
+                                it.relativePath.trim().trim('/').isEmpty()
+                        }
+                    } else {
+                        index.rowsOf(albumId, album)
+                    }
+                    rows.map { if (it.bucketId != albumId) it.copy(bucketId = albumId) else it }
                         .distinctBy { it.id }
                 } else existing
             }
@@ -4892,12 +5065,15 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
             runCatching { File(appContext.filesDir, "media_snapshot.json").delete() }
             if (_currentMedia.value.isEmpty()) {
                 val loadStarted = android.os.SystemClock.elapsedRealtime()
-                val indexed = mediaIndex.loadAll()
+                var mimeCorrected = false
+                val indexed = mediaIndex.loadAll(onMimeCorrected = { mimeCorrected = true })
                 AppLog.event("Startup") { "index loadAll: ${indexed.size} rows in ${android.os.SystemClock.elapsedRealtime() - loadStarted} ms" }
                 indexMutex.withLock {
                     persisted = HashMap<Long, GalleryMedia>(indexed.size * 2).also { map ->
                         indexed.forEach { map[it.id] = it }
                     }
+                    // Rows stored with an old type: the next full sync rewrites them, as it always did.
+                    persistedDiverged = mimeCorrected
                     indexReady = true
                 }
                 if (indexed.isNotEmpty() && _currentMedia.value.isEmpty()) {
@@ -5005,6 +5181,8 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                 .conflate()
                 .collect {
                 delay(CONTENT_SETTLE_MS)
+                // A move bumps the epoch per file: a sync now would be thrown away. Delayed, not dropped.
+                if (movesInFlight.value != 0) movesInFlight.first { it == 0 }
                 val since = firstChangeAt.getAndSet(0L)
                 val changes = mediaChanges.drain()
                 val explicit = explicitRefresh.getAndSet(false)
@@ -5201,6 +5379,11 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
 
                 if (idIdx < 0 || nameIdx < 0 || mimeIdx < 0) return@use
 
+                // The same for every row of a folder: worked out once per folder, not per row.
+                val bucketIdByPath = HashMap<String, Long>()
+                val bucketIdByName = HashMap<String, Long>()
+                val folderNameByPath = HashMap<String, String>()
+
                 while (rows.moveToNext()) {
                     val id = rows.getLong(idIdx)
                     val name = rows.getString(nameIdx).orEmpty()
@@ -5211,8 +5394,17 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                     // A photo or video the system gave a general type ("application/binary"...) gets its own.
                     val extMime = NomediaScanner.mediaMimeOf(rawMime, name)
                     val mime = extMime ?: if (isVideo) "video/*" else "image/*"
-                    val itemIsVideo = isVideo || mime.startsWith("video/", ignoreCase = true) || NomediaScanner.mimeOf(File(name))?.startsWith("video/") == true
-                    val isMedia = itemIsVideo || mime.startsWith("image/", ignoreCase = true) || NomediaScanner.mimeOf(File(name))?.startsWith("image/") == true
+                    val itemIsVideo: Boolean
+                    val isMedia: Boolean
+                    if (isVideo || mime.startsWith("video/", ignoreCase = true)) {
+                        itemIsVideo = true
+                        isMedia = true
+                    } else {
+                        // The type by name, read once for both checks.
+                        val byName = NomediaScanner.mimeOf(File(name))
+                        itemIsVideo = byName?.startsWith("video/") == true
+                        isMedia = itemIsVideo || mime.startsWith("image/", ignoreCase = true) || byName?.startsWith("image/") == true
+                    }
                     if (!isMedia) continue
 
                     val rawBucketId = if (bucketIdIdx >= 0) rows.getLong(bucketIdIdx) else 0L
@@ -5238,21 +5430,24 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                         ""
                     }
 
-                    val folderKey = if (resolvedPath.isNotBlank()) {
-                        resolvedPath.trim().trim('/')
-                    } else if (bucketName.isNotBlank()) {
-                        bucketName.trim()
-                    } else if (isDownloadsCollection) {
-                        "Download"
+                    val bucketId = if (resolvedPath.isNotBlank()) {
+                        bucketIdByPath.getOrPut(resolvedPath) { NomediaScanner.syntheticBucketId(resolvedPath.trim().trim('/')) }
                     } else {
-                        "Unknown"
+                        bucketIdByName.getOrPut(bucketName) {
+                            val folderKey = if (bucketName.isNotBlank()) {
+                                bucketName.trim()
+                            } else if (isDownloadsCollection) {
+                                "Download"
+                            } else {
+                                "Unknown"
+                            }
+                            NomediaScanner.syntheticBucketId(folderKey)
+                        }
                     }
-
-                    val bucketId = NomediaScanner.syntheticBucketId(folderKey)
 
                     val resolvedBucketName = bucketName.ifBlank {
                         if (resolvedPath.isNotBlank()) {
-                            resolvedPath.trim().trim('/').substringAfterLast('/')
+                            folderNameByPath.getOrPut(resolvedPath) { resolvedPath.trim().trim('/').substringAfterLast('/') }
                         } else if (isDownloadsCollection) {
                             "Download"
                         } else {
@@ -5350,7 +5545,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         }
 
         nomediaCache = null
-        nomediaScanner.rescanTree(target)
+        // Every file of the new tree is scanned below (a tree rescan here sent them all twice).
 
         val newFiles = target.walkTopDown().filter { it.isFile }.map { it.absolutePath }.toList()
         val oldFiles = dir.walkTopDown().filter { it.isFile }.map { it.absolutePath }.toList()
@@ -5365,9 +5560,8 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         }
 
         val root = Environment.getExternalStorageDirectory()
-        val newRelPath = (target.relativeToOrNull(root)?.path?.replace('\\', '/')
-            ?: Regex("^/storage/[^/]+/(.+)$").find(target.absolutePath)?.groupValues?.get(1))
-            ?.trim('/')?.let { "$it/" }.orEmpty()
+        val newRelPath = StoragePaths.pathOnItsVolume(target.absolutePath, root.absolutePath)
+            ?.trim('/')?.takeIf { it.isNotEmpty() }?.let { "$it/" }.orEmpty()
         // The id the library gives the folder on its next read: path-derived, relative for
         // MediaStore and hidden folders, the full path for private ones.
         val newBucketId = if (album.isSecure) {
@@ -5382,6 +5576,9 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
             }
             if (album.id in updated.anonymousFolderIds) {
                 updated = updated.copy(anonymousFolderIds = (updated.anonymousFolderIds - album.id) + newBucketId)
+            }
+            if (album.id in updated.numberedFolderIds) {
+                updated = updated.copy(numberedFolderIds = (updated.numberedFolderIds - album.id) + newBucketId)
             }
             if (album.id in updated.smartIndexIncludedFolderIds) {
                 updated = updated.copy(smartIndexIncludedFolderIds = (updated.smartIndexIncludedFolderIds - album.id) + newBucketId)

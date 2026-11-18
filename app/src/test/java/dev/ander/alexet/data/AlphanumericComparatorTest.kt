@@ -51,4 +51,21 @@ class AlphanumericComparatorTest {
         val names = listOf("img2.jpg", "img1~1.jpg", "img1.jpg", "img3~2.jpg")
         assertEquals(listOf("img3~2.jpg", "img1~1.jpg", "img1.jpg", "img2.jpg"), names.sortedWith(AlphanumericComparator))
     }
+
+    @Test
+    fun `names without a tilde keep natural order`() {
+        val names = listOf("img10.jpg", "img2.jpg", "img1.jpg", "img1.png", "img")
+        assertEquals(listOf("img", "img1.jpg", "img1.png", "img2.jpg", "img10.jpg"), names.sortedWith(AlphanumericComparator))
+    }
+
+    @Test
+    fun `a tilde that is not a layer sorts like any other character`() {
+        // "~5" and "a~b" are no "name12~3" layer: compared as plain names.
+        val names = listOf("x~b.jpg", "x~a.jpg", "img2.jpg", "img1~1.jpg", "img1.jpg")
+        assertEquals(
+            listOf("img1~1.jpg", "img1.jpg", "img2.jpg", "x~a.jpg", "x~b.jpg"),
+            names.sortedWith(AlphanumericComparator),
+        )
+        assertEquals(0, AlphanumericComparator.compare("photo~.jpg", "photo~.jpg"))
+    }
 }

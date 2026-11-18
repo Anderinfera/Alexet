@@ -129,7 +129,175 @@ object ArchiveReader {
         }
     }
 
-    private fun copy(input: InputStream, target: File, size: Long, onProgress: (Int) -> Unit, isCancelled: () -> Boolean): Boolean {
+    /** What [extractAll] did: the files written, entries left out (encrypted, unreadable), and whether it stopped early. */
+    class ExtractResult(val files: List<File>, val skipped: Int, val stopped: Boolean)
+
+    /**
+     * Unpacks the whole [archive] into [targetDir], keeping its folders. Existing files are not
+     * overwritten (the new one gets " (1)"), encrypted or unreadable entries are left out, and
+     * nothing is written outside [targetDir] (paths with ".." are cut). [onProgress] gets 0..100
+     * of [totalBytes] (the listing's sum), or -1 when it is not known.
+     */
+    fun extractAll(
+        archive: File,
+        targetDir: File,
+        totalBytes: Long,
+        onProgress: (Int) -> Unit = {},
+        isCancelled: () -> Boolean = { false },
+    ): ExtractResult {
+        val format = formatOf(archive.name) ?: return ExtractResult(emptyList(), 0, stopped = true)
+        val written = ArrayList<File>()
+        var skipped = 0
+        var stopped = false
+        var done = 0L
+        var lastPercent = -2
+        fun report() {
+            val percent = if (totalBytes > 0) (done * 100 / totalBytes).toInt().coerceIn(0, 100) else -1
+            if (percent != lastPercent) {
+                lastPercent = percent
+                onProgress(percent)
+            }
+        }
+        /** One entry: a folder is made, a file is copied out. False stops the whole unpacking. */
+        fun write(name: String, isDirectory: Boolean, size: Long, modifiedMs: Long, input: () -> InputStream?): Boolean {
+            if (isCancelled()) return false
+            val relative = safeRelativePath(name) ?: return true
+            if (isDirectory) {
+                File(targetDir, relative).mkdirs()
+                return true
+            }
+            val wanted = File(targetDir, relative)
+            val dir = wanted.parentFile ?: targetDir
+            if (!dir.isDirectory && !dir.mkdirs()) return false
+            val target = resolveUniqueTargetFile(dir, wanted.name)
+            if (!isInside(target, targetDir)) {
+                skipped++
+                return true
+            }
+            val stream = input()
+            if (stream == null) {
+                skipped++
+                return true
+            }
+            val before = done
+            val ok = try {
+                stream.use { copy(it, target, size, {}, isCancelled, onBytes = { n -> done += n; report() }) }
+            } catch (e: Throwable) {
+                // A damaged or encrypted entry: no half-written file is left behind.
+                target.delete()
+                done = before
+                throw e
+            }
+            if (!ok) {
+                target.delete()
+                done = before
+                return false
+            }
+            if (modifiedMs > 0) target.setLastModified(modifiedMs)
+            written += target
+            return true
+        }
+        try {
+            if (!targetDir.isDirectory && !targetDir.mkdirs()) return ExtractResult(emptyList(), 0, stopped = true)
+            report()
+            when (format) {
+                Format.ZIP -> ZipFile.builder().setFile(archive).get().use { zip ->
+                    for (entry in zip.entries) {
+                        val encrypted = entry.generalPurposeBit.usesEncryption()
+                        val ok = write(entry.name, entry.isDirectory, entry.size, entry.time.coerceAtLeast(0L)) {
+                            if (encrypted || !zip.canReadEntryData(entry)) null else zip.getInputStream(entry)
+                        }
+                        if (!ok) {
+                            stopped = true
+                            break
+                        }
+                    }
+                }
+                Format.SEVEN_Z -> SevenZFile.builder().setFile(archive).get().use { sevenZ ->
+                    // In order: a solid 7Z is read once from the start, not again for every file.
+                    while (true) {
+                        val entry = sevenZ.nextEntry ?: break
+                        val name = entry.name ?: continue
+                        val modified = if (entry.hasLastModifiedDate) entry.lastModifiedDate.time else 0L
+                        val ok = try {
+                            write(name, entry.isDirectory, if (entry.hasStream()) entry.size else 0L, modified) {
+                                // The current entry's data, read through the archive itself (closed at the end).
+                                object : InputStream() {
+                                    override fun read(): Int = sevenZ.read()
+                                    override fun read(b: ByteArray, off: Int, len: Int): Int = sevenZ.read(b, off, len)
+                                }
+                            }
+                        } catch (e: PasswordRequiredException) {
+                            skipped++
+                            true
+                        }
+                        if (!ok) {
+                            stopped = true
+                            break
+                        }
+                    }
+                }
+                Format.TAR, Format.TAR_GZ -> openTar(archive, format == Format.TAR_GZ).use { tar ->
+                    while (true) {
+                        val entry = tar.nextEntry ?: break
+                        // Links could point anywhere: only folders and plain files are unpacked.
+                        if (!entry.isDirectory && !entry.isFile) {
+                            skipped++
+                            continue
+                        }
+                        val ok = write(entry.name, entry.isDirectory, entry.size, entry.lastModifiedDate?.time ?: 0L) {
+                            object : java.io.FilterInputStream(tar) { override fun close() {} }
+                        }
+                        if (!ok) {
+                            stopped = true
+                            break
+                        }
+                    }
+                }
+                Format.RAR -> stopped = true
+            }
+        } catch (e: Exception) {
+            AppLog.w("ArchiveReader", "Unpacking ${archive.name} failed", e)
+            stopped = true
+        } catch (e: OutOfMemoryError) {
+            stopped = true
+        }
+        return ExtractResult(written, skipped, stopped)
+    }
+
+    /**
+     * [name] as a path under the target folder: "." and ".." and empty parts dropped, each part
+     * made a valid file name. Null when nothing is left.
+     */
+    internal fun safeRelativePath(name: String): String? {
+        val parts = normalize(name).split('/')
+            .filter { it.isNotEmpty() && it != "." && it != ".." }
+            .map { sanitizeFileName(it, fallback = "_") }
+        return parts.joinToString("/").ifEmpty { null }
+    }
+
+    private fun isInside(file: File, dir: File): Boolean = runCatching {
+        file.canonicalPath.startsWith(dir.canonicalPath + File.separator)
+    }.getOrDefault(false)
+
+    /** The folder an archive unpacks into by default: its name without the extension. */
+    fun folderNameFor(archiveName: String): String {
+        val lower = archiveName.lowercase()
+        val cut = when {
+            lower.endsWith(".tar.gz") -> 7
+            else -> archiveName.length - archiveName.lastIndexOf('.').let { if (it <= 0) archiveName.length else it }
+        }
+        return sanitizeFileName(archiveName.dropLast(cut).trim(), fallback = "Archive")
+    }
+
+    private fun copy(
+        input: InputStream,
+        target: File,
+        size: Long,
+        onProgress: (Int) -> Unit,
+        isCancelled: () -> Boolean,
+        onBytes: (Int) -> Unit = {},
+    ): Boolean {
         // The phone's own storage must not fill up: a huge (or lying) entry stops in time.
         val dir = target.absoluteFile.parentFile
         if (dir != null && size > 0 && dir.usableSpace < size + MIN_FREE_BYTES) {
@@ -151,6 +319,7 @@ object ArchiveReader {
                 if (n < 0) break
                 out.write(buffer, 0, n)
                 done += n
+                onBytes(n)
                 if (done >= nextSpaceCheck) {
                     nextSpaceCheck = done + SPACE_CHECK_BYTES
                     if (dir != null && dir.usableSpace < MIN_FREE_BYTES) {

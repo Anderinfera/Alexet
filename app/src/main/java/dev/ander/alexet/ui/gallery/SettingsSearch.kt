@@ -81,6 +81,7 @@ val settingsSearchEntries: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry(R.string.settings_file_columns_label, SettingsCategory.VIEW, R.string.settings_file_columns_desc, visible = notWide),
     SettingsSearchEntry(R.string.pane_split_title, SettingsCategory.VIEW, visible = notWide),
     SettingsSearchEntry(R.string.dynamic_split_title, SettingsCategory.VIEW, R.string.dynamic_split_body, visible = notWide),
+    SettingsSearchEntry(R.string.fold_shows_folders_title, SettingsCategory.VIEW, R.string.fold_shows_folders_body, visible = { notWide(it) && foldOnly(it) }),
     SettingsSearchEntry(R.string.auto_fold_split_title, SettingsCategory.VIEW, R.string.auto_fold_split_body, visible = { notWide(it) && foldOnly(it) }),
     SettingsSearchEntry(
         R.string.fold_split_angle_title, SettingsCategory.VIEW, R.string.fold_split_angle_body,
@@ -117,7 +118,9 @@ val settingsSearchEntries: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry(R.string.strip_exif_on_share_title, SettingsCategory.PRIVACY, R.string.strip_exif_on_share_body),
     // Viewing
     SettingsSearchEntry(R.string.newpipe_folder_title, SettingsCategory.FOLDERS, R.string.newpipe_folder_desc),
-    SettingsSearchEntry(R.string.video_double_click_gallery, SettingsCategory.VIEWING, R.string.video_double_click_gallery_body),
+    SettingsSearchEntry(R.string.videos_only_in_alexet, SettingsCategory.VIEWING, R.string.videos_only_in_alexet_body),
+    SettingsSearchEntry(R.string.player_like_external, SettingsCategory.VIEWING, R.string.player_like_external_body),
+    SettingsSearchEntry(R.string.video_double_click_gallery, SettingsCategory.VIEWING, R.string.video_double_click_gallery_body, visible = { !it.videosOnlyInAlexet }),
     SettingsSearchEntry(R.string.pip_title, SettingsCategory.VIEWING, R.string.pip_body),
     SettingsSearchEntry(R.string.background_play_title, SettingsCategory.VIEWING, R.string.background_play_body),
     SettingsSearchEntry(R.string.player_volume_gesture_title, SettingsCategory.VIEWING, R.string.player_volume_gesture_body),

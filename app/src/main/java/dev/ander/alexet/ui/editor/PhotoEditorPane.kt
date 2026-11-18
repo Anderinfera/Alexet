@@ -63,7 +63,6 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.ui.draw.clipToBounds
 import dev.ander.alexet.ui.theme.AlexetTheme
-import dev.ander.alexet.foldable.rememberFoldableState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
@@ -1140,15 +1139,12 @@ private fun PhotoEditorMainLayout(
         viewRotation = { viewRotation },
     )
 
-    val foldable = rememberFoldableState()
-    val isTabletop = foldable.isTabletop
-
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black),
     ) {
-        // Upper Section: Top Bar + Workspace (above horizontal hinge in Tabletop mode)
+        // Upper Section: Top Bar + Workspace
         Column(
             modifier = Modifier
                 .weight(1f)
@@ -1538,21 +1534,13 @@ private fun PhotoEditorMainLayout(
         }
         }
 
-        // 3. Bottom Control Panel (in tabletop mode takes weight(1f) to act as a mixing console)
+        // 3. Bottom Control Panel
         Column(
-            modifier = if (isTabletop) {
-                Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.96f))
-                    .navigationBarsPadding()
-            } else {
-                Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.96f))
-                    .navigationBarsPadding()
-            },
-            verticalArrangement = if (isTabletop) Arrangement.Center else Arrangement.Top,
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.96f))
+                .navigationBarsPadding(),
+            verticalArrangement = Arrangement.Top,
         ) {
             when (currentTab) {
                 PhotoEditorTab.ASPECT -> {
