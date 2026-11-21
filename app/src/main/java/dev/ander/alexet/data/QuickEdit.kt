@@ -8,6 +8,16 @@ import dev.ander.alexet.data.videoeditor.VideoExportConfig
 import dev.ander.alexet.data.videoeditor.VideoExportPlanner
 import dev.ander.alexet.data.videoeditor.VideoProjectAspectRatio
 import dev.ander.alexet.data.videoeditor.VideoProjectState
+import kotlin.math.pow
+import kotlin.math.roundToInt
+
+/** Settings for compressing/quantizing an animated GIF in Quick Edit. */
+data class GifQualityProfile(
+    val maxColors: Int,
+    val temporalMaxDist: Int,
+    val spatialMaxDist: Int,
+    val minFrameDelayMs: Int,
+)
 
 /** What "Quick edit" does to one photo or video; everything is saved at once. */
 data class QuickEditSettings(
@@ -59,9 +69,9 @@ object QuickEdit {
     /** Photo sizes tried (share of each side) when the quality alone can't reach a file size. */
     val PHOTO_SCALES = listOf(1f, 0.75f, 0.5f, 0.35f, 0.25f)
 
-    /** Not for GIFs (animated), private files or files that are no photo or video. */
+    /** Not for private files or files that are no photo or video. */
     fun supports(media: GalleryMedia): Boolean =
-        !media.isOtherFile && !media.isEncrypted && !isGif(media)
+        !media.isOtherFile && !media.isEncrypted
 
     fun isGif(media: GalleryMedia): Boolean =
         media.mimeType.equals("image/gif", ignoreCase = true) || media.displayName.endsWith(".gif", ignoreCase = true)
@@ -71,12 +81,44 @@ object QuickEdit {
      * quality setting and is saved as JPG.
      */
     fun photoExtension(media: GalleryMedia, quality: Int): String {
+        if (isGif(media)) return "gif"
         val own = when (media.displayName.substringAfterLast('.', "").lowercase()) {
             "png" -> "png"
             "webp" -> "webp"
             else -> if (media.mimeType.equals("image/png", ignoreCase = true)) "png" else "jpg"
         }
         return if (own == "png" && quality < MAX_QUALITY) "jpg" else own
+    }
+
+    fun gifProfile(quality: Int): GifQualityProfile {
+        val q = quality.coerceIn(MIN_QUALITY, MAX_QUALITY)
+        val t = (MAX_QUALITY - q).toDouble() / (MAX_QUALITY - MIN_QUALITY)
+        val maxColors = (16 + (1.0 - t).pow(1.4) * 240.0).roundToInt().coerceIn(16, 256)
+        val temporalDelta = (t.pow(1.3) * 34.0).roundToInt()
+        val spatialDelta = (t.pow(1.5) * 24.0).roundToInt()
+        val minFrameDelayMs = if (q >= 70) 0 else ((70 - q) * 140 / 60)
+        return GifQualityProfile(
+            maxColors = maxColors,
+            temporalMaxDist = 9 * temporalDelta * temporalDelta,
+            spatialMaxDist = 9 * spatialDelta * spatialDelta,
+            minFrameDelayMs = minFrameDelayMs,
+        )
+    }
+
+    fun keptGifFrameCount(frameDelaysMs: IntArray, minFrameDelayMs: Int): Int {
+        if (frameDelaysMs.isEmpty()) return 0
+        if (minFrameDelayMs <= 0) return frameDelaysMs.size
+        var kept = 1
+        var pending = frameDelaysMs[0]
+        for (i in 1 until frameDelaysMs.size) {
+            if (pending < minFrameDelayMs) {
+                pending += frameDelaysMs[i]
+            } else {
+                kept++
+                pending = frameDelaysMs[i]
+            }
+        }
+        return kept
     }
 
     fun swapsSides(rotation: Int): Boolean = Math.floorMod(rotation, 180) == 90

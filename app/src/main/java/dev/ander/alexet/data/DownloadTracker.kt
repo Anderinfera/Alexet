@@ -369,6 +369,11 @@ class DownloadTracker(
         if (changed) publish()
     }
 
+    /** A download seen as a pending MediaStore row is being followed (it is released by [syncPending]). */
+    fun hasMediaStorePending(): Boolean = synchronized(this) {
+        entries.values.any { it.source == DownloadSource.MEDIASTORE_PENDING }
+    }
+
     fun syncPending(pendingPaths: Collection<String>) {
         // Sizes read before the lock (see onCreated).
         val sizes = HashMap<String, Long?>()

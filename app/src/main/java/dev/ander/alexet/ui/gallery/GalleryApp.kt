@@ -145,7 +145,6 @@ import android.provider.DocumentsContract
 import dev.ander.alexet.R
 import android.os.Build
 import androidx.compose.animation.core.FastOutSlowInEasing
-import com.google.accompanist.permissions.rememberPermissionState
 import dev.ander.alexet.data.Album
 import dev.ander.alexet.data.AlbumIds
 import dev.ander.alexet.data.ContentViewMode
@@ -194,15 +193,36 @@ fun GalleryApp(
     val permissionState = rememberMultiplePermissionsState(mediaPermissions())
     val hasAccess = permissionState.permissions.any { it.status.isGranted }
 
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && hasAccess) {
-        val notifPermState = rememberPermissionState(android.Manifest.permission.POST_NOTIFICATIONS)
+    if (hasAccess) {
         val appContext = LocalContext.current.applicationContext
-        LaunchedEffect(hasAccess) {
-            // Asked once: after a refusal the system dialog would otherwise come back on every start.
-            val flags = appContext.getSharedPreferences("alexet_ui_flags", android.content.Context.MODE_PRIVATE)
-            if (!notifPermState.status.isGranted && !flags.getBoolean("notifications_asked", false)) {
-                flags.edit().putBoolean("notifications_asked", true).apply()
-                notifPermState.launchPermissionRequest()
+        // Asked once each: after a refusal the system dialog would otherwise come back on every
+        // start. One request for all of them, since a second one would cancel the first.
+        val flags = remember {
+            appContext.getSharedPreferences("alexet_ui_flags", android.content.Context.MODE_PRIVATE)
+        }
+        val extraPermissions = remember {
+            buildMap {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    androidx.core.content.ContextCompat.checkSelfPermission(
+                        appContext,
+                        android.Manifest.permission.POST_NOTIFICATIONS,
+                    ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+                ) {
+                    put(android.Manifest.permission.POST_NOTIFICATIONS, "notifications_asked")
+                }
+                dev.ander.alexet.integration.DownloaderProgressClient.missingPermissions(appContext)
+                    .forEach { put(it, "asked_$it") }
+            }.filterValues { !flags.getBoolean(it, false) }
+        }
+        if (extraPermissions.isNotEmpty()) {
+            val extraPermState = rememberMultiplePermissionsState(extraPermissions.keys.toList()) { result ->
+                if (result.any { (permission, granted) -> granted && permission.endsWith(".READ_DOWNLOAD_PROGRESS") }) {
+                    dev.ander.alexet.data.AppGraph.repository(appContext).onDownloaderPermissionGranted()
+                }
+            }
+            LaunchedEffect(Unit) {
+                flags.edit().apply { extraPermissions.values.forEach { putBoolean(it, true) } }.apply()
+                extraPermState.launchMultiplePermissionRequest()
             }
         }
     }
@@ -239,6 +259,11 @@ fun GalleryApp(
     val activeDownloadsState = viewModel.activeDownloads.collectAsStateWithLifecycle()
     val activeDownloads = remember(activeDownloadsState) { { activeDownloadsState.value } }
     val transferProgressState = viewModel.transferProgress.collectAsStateWithLifecycle()
+    // Read only inside the video editor (each percent recomposed the whole screen before).
+    val exportProgressState = viewModel.exportVideoProgress.collectAsStateWithLifecycle()
+    // Only whether the card shows is read up here: the count, read inside the card, changes once
+    // per copied file and recomposed the whole screen each time.
+    val transferVisible by remember { derivedStateOf { transferProgressState.value != null } }
     val smartStatusState = viewModel.smartStatus.collectAsStateWithLifecycle()
     val editCopyOnly by viewModel.editCopyOnly.collectAsStateWithLifecycle()
     val fullScan by viewModel.fullScan.collectAsStateWithLifecycle()
@@ -473,10 +498,12 @@ fun GalleryApp(
         val currentOpen = uiState.openFolderIds.toSet()
         if (!uiState.settings.rememberFolderScrollAcrossSessions) {
             if (lastActiveFolderId != current) {
+                // The folder left starts at the top next time. The one entered keeps the state its
+                // grid took in this very composition (this effect runs after it): dropping it gave
+                // the grid a new state at the top on its next recomposition (the end of the first
+                // quick selection jumped the folder to its top).
                 folderGridStates.remove(lastActiveFolderId)
                 folderGridLruKeys.remove(lastActiveFolderId)
-                folderGridStates.remove(current)
-                folderGridLruKeys.remove(current)
             }
             val toRemove = folderGridStates.keys.filter { it != current && it !in currentOpen }
             toRemove.forEach { id ->
@@ -835,7 +862,7 @@ fun GalleryApp(
                     uiState.phoneFolderId != AlbumIds.NONE -> uiState.visibleFilesIn(uiState.phoneFolderId).size
                     !wide -> uiState.visibleAlbums.size
                     // Split panes: the folder the selected files are in, not the whole library.
-                    else -> uiState.selectedFiles.map { it.bucketId }.distinct().singleOrNull()
+                    else -> uiState.selectionSummary.singleBucketId
                         ?.let { uiState.visibleFilesIn(it).size }
                         ?: uiState.media.size
                 },
@@ -910,14 +937,10 @@ fun GalleryApp(
                         viewModel.requestWriteConsent(sender)
                     }
                 },
-                canUnhide = uiState.selectedFiles.any {
-                    it.isHidden || it.id in uiState.settings.hiddenMediaIds
-                } || uiState.selectedAlbums.any {
+                canUnhide = uiState.selectionSummary.anyHidden || uiState.selectedAlbums.any {
                     it.isHidden || it.id in uiState.settings.hiddenAlbumIds
                 },
-                isAllFavorites = uiState.selectedFiles.isNotEmpty() && uiState.selectedFiles.all {
-                    it.id in uiState.settings.favoriteMediaIds
-                },
+                isAllFavorites = uiState.selectionSummary.allFavorites,
                 onToggleFavorite = viewModel::toggleFavoriteSelection,
                 onCopy = { albumPick = AlbumPickMode.COPY },
                 onMove = { albumPick = AlbumPickMode.MOVE },
@@ -933,15 +956,16 @@ fun GalleryApp(
                     }
                 },
                 onEdit = run {
-                    val selectedVideos = uiState.selectedFiles.filter { it.isVideo }
-                    val selectedPhotos = uiState.selectedFiles.filter { !it.isVideo }
+                    val summary = uiState.selectionSummary
                     // Other files (apk, pdf...) have no editor.
-                    val canEdit = uiState.selectedFiles.none { it.isOtherFile } && (
-                        (selectedVideos.isNotEmpty() && selectedPhotos.isEmpty() && uiState.selectedAlbumIds.isEmpty()) ||
-                            (selectedPhotos.isNotEmpty() && selectedVideos.isEmpty() && uiState.selectedAlbumIds.isEmpty())
+                    val canEdit = !summary.hasOtherFile && uiState.selectedAlbumIds.isEmpty() && (
+                        (summary.videos > 0 && summary.nonVideos == 0) || (summary.nonVideos > 0 && summary.videos == 0)
                         )
                     if (canEdit) {
                         {
+                            // The lists themselves only when tapped.
+                            val selectedVideos = uiState.selectedFiles.filter { it.isVideo }
+                            val selectedPhotos = uiState.selectedFiles.filter { !it.isVideo }
                             if (selectedVideos.isNotEmpty()) {
                                 viewModel.openVideoEditor(selectedVideos)
                                 viewModel.clearSelection()
@@ -966,12 +990,11 @@ fun GalleryApp(
                     } else null
                 },
                 editLabelRes = run {
-                    val selectedVideos = uiState.selectedFiles.filter { it.isVideo }
-                    val selectedPhotos = uiState.selectedFiles.filter { !it.isVideo }
+                    val summary = uiState.selectionSummary
                     when {
-                        selectedVideos.size > 1 -> R.string.merge_and_edit_videos
-                        selectedVideos.size == 1 -> R.string.edit_video
-                        selectedPhotos.size == 1 -> R.string.edit_photo
+                        summary.videos > 1 -> R.string.merge_and_edit_videos
+                        summary.videos == 1 -> R.string.edit_video
+                        summary.nonVideos == 1 -> R.string.edit_photo
                         else -> null
                     }
                 },
@@ -1279,7 +1302,7 @@ fun GalleryApp(
             }
 
             AnimatedVisibility(
-                visible = transferProgressState.value != null,
+                visible = transferVisible,
                 enter = slideInVertically(
                     initialOffsetY = { fullHeight -> fullHeight * 2 },
                     animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
@@ -1641,7 +1664,7 @@ fun GalleryApp(
                 initialMedia = videoListToEdit,
                 availableMedia = uiState.media,
                 isExporting = uiState.isExportingVideo,
-                exportProgress = uiState.exportVideoProgress,
+                exportProgress = exportProgressState.value,
                 onExport = { project, config ->
                     viewModel.exportVideo(project, config)
                 },
@@ -2098,6 +2121,8 @@ private fun GalleryBody(
     onDecryptFolder: (Album) -> Unit = {},
     onTransientCountChange: (Int?) -> Unit = {},
 ) {
+    // Folder deletes' progress, read by each folder tile itself (not part of the screen state).
+    val deletingFoldersState = dev.ander.alexet.data.FolderDeleteQueue.jobs.collectAsStateWithLifecycle()
     val searchingFiles = uiState.searchMode.searchesFiles && uiState.query.isNotBlank() && uiState.phoneFolderId == AlbumIds.NONE
     val expand = wide && uiState.settings.contentViewMode == ContentViewMode.EXPAND_FOLDERS
     val phoneOverlay = uiState.phoneFolderId != AlbumIds.NONE && (!wide || expand)
@@ -2263,7 +2288,8 @@ private fun GalleryBody(
                     visibleRows = visibleRows,
                     hoveredAlbumId = uiState.hoveredAlbumId,
                     stampedAlbumIds = uiState.stampedAlbumIds,
-                    selectedCount = uiState.selectedFileIds.size,
+                    // Only whether files are selected: each tap changed the count and every folder tile recomposed.
+                    hasFileSelection = uiState.selectedFileIds.isNotEmpty(),
                     selectedAlbumIds = uiState.selectedAlbumIds,
                     folderDragEnabled = folderDrag,
                     dimmed = uiState.dragKind == DragKind.FOLDER,
@@ -2284,7 +2310,7 @@ private fun GalleryBody(
                     gridState = folderGridState,
                     isLoading = uiState.isLoading,
                     downloadingAlbumIds = uiState.downloadingAlbumIds,
-                    deletingFolders = uiState.deletingFolders,
+                    deletingFolders = { deletingFoldersState.value },
                     onCancelFolderDelete = dev.ander.alexet.data.FolderDeleteQueue::cancel,
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -2481,6 +2507,8 @@ private fun GalleryLeftPaneForEditor(
     folderGridState: LazyGridState,
     modifier: Modifier = Modifier,
 ) {
+    // Folder deletes' progress, read by each folder tile itself (not part of the screen state).
+    val deletingFoldersState = dev.ander.alexet.data.FolderDeleteQueue.jobs.collectAsStateWithLifecycle()
     val currentAlbum = remember(folderId, uiState.allAlbums) {
         uiState.allAlbums.find { it.id == folderId }
     }
@@ -2582,7 +2610,7 @@ private fun GalleryLeftPaneForEditor(
                     visibleRows = 4,
                     hoveredAlbumId = AlbumIds.NONE,
                     stampedAlbumIds = emptySet(),
-                    selectedCount = 0,
+                    hasFileSelection = false,
                     selectedAlbumIds = emptySet(),
                     selectionEnabled = false,
                     folderDragEnabled = false,
@@ -2601,7 +2629,7 @@ private fun GalleryLeftPaneForEditor(
                     gridState = folderGridState,
                     isLoading = uiState.isLoading,
                     downloadingAlbumIds = uiState.downloadingAlbumIds,
-                    deletingFolders = uiState.deletingFolders,
+                    deletingFolders = { deletingFoldersState.value },
                     onCancelFolderDelete = dev.ander.alexet.data.FolderDeleteQueue::cancel,
                     modifier = Modifier.fillMaxSize(),
                 )

@@ -130,7 +130,11 @@ fun MediaThumbnail(
         media.uri.path?.endsWith(dev.ander.alexet.data.SecureFolderManager.ENC_EXTENSION, ignoreCase = true) == true
     // Light mode: a thumbnail appears at once, without fading in over two drawn layers.
     val lightMode = LocalLightMode.current
-    val request = remember(media.id, media.isVideo, thumbnail, thumbPx, resolvedKey, thumbGeneration, attempt, media.absolutePath, skipLoad, pinnedCover != null, isEncrypted, knownBroken, lightMode) {
+    // The viewer: the grid's thumbnail of this file (same key as its tile) stands in until the full
+    // picture is decoded, instead of a black page for 100-400 ms.
+    val gridThumbKey = if (thumbnail || cacheKey != null) null
+    else "thumb-${media.id}-${media.dateModifiedMs}-g${LocalFolderThumbEpoch.current}${thumbSizeSuffix(thumbPx)}"
+    val request = remember(media.id, media.isVideo, thumbnail, thumbPx, resolvedKey, thumbGeneration, attempt, media.absolutePath, skipLoad, pinnedCover != null, isEncrypted, knownBroken, lightMode, gridThumbKey) {
         if (skipLoad || pinnedCover != null || knownBroken) return@remember null
         val resolvedPath = media.absolutePath ?: run {
             val root = android.os.Environment.getExternalStorageDirectory()
@@ -179,6 +183,7 @@ fun MediaThumbnail(
                 } else {
                     size(Size(2560, 2560))
                     precision(coil3.size.Precision.INEXACT)
+                    gridThumbKey?.let { placeholderMemoryCacheKey(it) }
                 }
             }
             .build()
@@ -227,7 +232,22 @@ fun MediaThumbnail(
                 contentScale = contentScale,
                 modifier = Modifier.fillMaxSize(),
             )
-        } else if (request != null && prefetchDone) {
+        } else if (request != null && !prefetchDone && gridThumbKey != null) {
+            // Waiting for the decode started at the tap: the grid's thumbnail meanwhile.
+            val standIn = remember(gridThumbKey) {
+                (coil3.SingletonImageLoader.get(context).memoryCache?.get(coil3.memory.MemoryCache.Key(gridThumbKey))?.image as? coil3.BitmapImage)
+                    ?.bitmap?.asImageBitmap()
+            }
+            if (standIn != null) {
+                Image(
+                    bitmap = standIn,
+                    contentDescription = media.displayName,
+                    contentScale = contentScale,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+        if (pinnedCover == null && request != null && prefetchDone) {
             AsyncImage(
                 model = request,
                 contentDescription = media.displayName,

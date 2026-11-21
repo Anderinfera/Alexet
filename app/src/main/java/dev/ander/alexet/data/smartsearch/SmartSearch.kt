@@ -23,8 +23,10 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -310,8 +312,12 @@ class SmartSearch(context: Context, private val settings: SettingsStore, private
         val ready = _status.map { (it.model as? ModelState.Ready)?.manifest?.modelId }.distinctUntilChanged()
         val media = repository.media.debounce(MEDIA_DEBOUNCE_MS)
         val active = combine(appVisible, jobRunning) { visible, job -> visible || job }
-        combine(prefs, ready, media, active, combine(repository.isScanning, replan) { scanning, _ -> scanning }) { p, modelId, list, run, scanning ->
-            Inputs(p.enabled, modelId, list, run, scanning, p.folders, p.paused)
+        // A sync's start no longer stops the running pass (each sync started and ended a scan, and
+        // each switch planned everything again): only its end plans again, when the photos it
+        // kept from being taken out of the index can go. Whether a scan runs is read at planning.
+        val scanEnded = repository.isScanning.filter { !it }.map { }.onStart { emit(Unit) }
+        combine(prefs, ready, media, active, combine(scanEnded, replan) { _, _ -> }) { p, modelId, list, run, _ ->
+            Inputs(p.enabled, modelId, list, run, repository.isScanning.value, p.folders, p.paused)
         }.collectLatest { input ->
             if (!input.enabled || input.modelId == null) {
                 // Nothing will be indexed: the encoder kept open after the last pass goes now.
@@ -348,9 +354,16 @@ class SmartSearch(context: Context, private val settings: SettingsStore, private
         ensureIndexLoaded(manifest)
         val secureDirs = SmartIndexPlanner.secureDirKeys(SecureFolderManager.getKnownSecurePaths())
         // Photos of folders taken out of the selection are in toDelete: they leave the index.
-        val plan = engineLock.withLock { SmartIndexPlanner.plan(input.media, HashMap(indexedKeys), secureDirs, input.folders) }
+        // Only the copy of the index's keys is made under the lock: the planning itself (31,000
+        // photos) kept a search typed meanwhile waiting.
+        val keys = engineLock.withLock { HashMap(indexedKeys) }
+        val plan = SmartIndexPlanner.plan(input.media, keys, secureDirs, input.folders)
         // While the gallery is still being read its list is incomplete: nothing is deleted then.
-        if (!input.scanning && input.media.isNotEmpty() && plan.toDelete.isNotEmpty()) {
+        // And only from the list as it is now: right after a scan its end is seen at once, but the
+        // list arrives 2 s later (debounced); an older, shorter one deleted photos to index again.
+        if (!input.scanning && !repository.isScanning.value && input.media === repository.media.value &&
+            input.media.isNotEmpty() && plan.toDelete.isNotEmpty()
+        ) {
             engineLock.withLock {
                 store.delete(plan.toDelete)
                 for (id in plan.toDelete) {

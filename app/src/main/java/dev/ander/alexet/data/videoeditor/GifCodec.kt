@@ -6,13 +6,26 @@ import java.io.OutputStream
 internal object GifCodec {
 
     /** [transparentIndex]: the palette entry left for see-through pixels, -1 when there are none. */
-    class Indexed(val palette: ByteArray, val indices: ByteArray, val transparentIndex: Int = -1)
+    class Indexed(
+        val palette: ByteArray,
+        val indices: ByteArray,
+        val transparentIndex: Int = -1,
+        val colorTableSizeBits: Int = 7,
+        val lzwMinCodeSize: Int = 8,
+    )
+
+    internal fun colorDistSq(c1: Int, c2: Int): Int {
+        val dr = ((c1 shr 16) and 0xFF) - ((c2 shr 16) and 0xFF)
+        val dg = ((c1 shr 8) and 0xFF) - ((c2 shr 8) and 0xFF)
+        val db = (c1 and 0xFF) - (c2 and 0xFF)
+        return dr * dr * 2 + dg * dg * 4 + db * db * 3
+    }
 
     /**
      * Median cut over a 15-bit color histogram: boxes are split at the population median of their
-     * longest axis until there are 256 (or nothing left to split); each box becomes the average of
+     * longest axis until there are [maxColors] (or nothing left to split); each box becomes the average of
      * its colors. Pixels map to the nearest palette entry, memoized per 15-bit color.
-     * With [keepTransparency], pixels under half alpha get entry 255 (and the colours 255 entries).
+     * With [keepTransparency], pixels under half alpha get the last palette entry (and colors the rest).
      */
     /**
      * Work arrays an encoder keeps for all its frames (two 128 KB tables and the index array were
@@ -24,11 +37,39 @@ internal object GifCodec {
         internal var indices = ByteArray(0)
     }
 
-    fun quantize(argb: IntArray, keepTransparency: Boolean = false, buffers: Buffers? = null): Indexed {
-        val hasTransparent = keepTransparency && argb.any { (it ushr 24) < 128 }
-        val maxColors = if (hasTransparent) 255 else 256
+    fun quantize(
+        argb: IntArray,
+        keepTransparency: Boolean = false,
+        buffers: Buffers? = null,
+        maxColors: Int = 256,
+        width: Int = 0,
+        spatialMaxDist: Int = 0,
+        length: Int = argb.size,
+    ): Indexed {
+        val nPixels = length.coerceIn(0, argb.size)
+        val clampedMax = maxColors.coerceIn(4, 256)
+        var sizeBits = 1
+        while (sizeBits < 7 && (1 shl (sizeBits + 1)) < clampedMax) {
+            sizeBits++
+        }
+        val tableSize = 1 shl (sizeBits + 1)
+        val lzwMinCodeSize = maxOf(2, sizeBits + 1)
+        var hasTransparent = false
+        if (keepTransparency) {
+            for (i in 0 until nPixels) {
+                if ((argb[i] ushr 24) < 128) {
+                    hasTransparent = true
+                    break
+                }
+            }
+        }
+        val transparentIndex = if (hasTransparent) tableSize - 1 else -1
+        val colorLimit = if (hasTransparent) minOf(clampedMax, tableSize - 1) else clampedMax
         val hist = buffers?.hist?.also { it.fill(0) } ?: IntArray(32768)
-        for (c in argb) if (!hasTransparent || (c ushr 24) >= 128) hist[key(c)]++
+        for (i in 0 until nPixels) {
+            val c = argb[i]
+            if (!hasTransparent || (c ushr 24) >= 128) hist[key(c)]++
+        }
 
         var colorCount = 0
         for (h in hist) if (h > 0) colorCount++
@@ -55,7 +96,7 @@ internal object GifCodec {
             }
         }
         addBox(intArrayOf(0, colorCount))
-        while (boxes.size < maxColors) {
+        while (boxes.size < colorLimit) {
             var best = -1
             var bestScore = 0L
             for (b in boxes.indices) {
@@ -83,7 +124,7 @@ internal object GifCodec {
             addBox(intArrayOf(split, box[1]))
         }
 
-        val palette = ByteArray(256 * 3)
+        val palette = ByteArray(tableSize * 3)
         val pr = IntArray(boxes.size)
         val pg = IntArray(boxes.size)
         val pb = IntArray(boxes.size)
@@ -111,16 +152,38 @@ internal object GifCodec {
 
         val lookup = buffers?.lookup?.also { it.fill(-1) } ?: IntArray(32768) { -1 }
         val indices = if (buffers != null) {
-            buffers.indices.takeIf { it.size == argb.size } ?: ByteArray(argb.size).also { buffers.indices = it }
+            buffers.indices.takeIf { it.size >= nPixels } ?: ByteArray(nPixels).also { buffers.indices = it }
         } else {
-            ByteArray(argb.size)
+            ByteArray(nPixels)
         }
-        for (i in argb.indices) {
-            if (hasTransparent && (argb[i] ushr 24) < 128) {
-                indices[i] = TRANSPARENT_INDEX.toByte()
+        var col = 0
+        var lastIdx = -1
+        var lastR = 0
+        var lastG = 0
+        var lastB = 0
+        for (i in 0 until nPixels) {
+            if (width > 0 && col == width) {
+                col = 0
+                lastIdx = -1
+            }
+            val c = argb[i]
+            if (hasTransparent && (c ushr 24) < 128) {
+                indices[i] = transparentIndex.toByte()
+                lastIdx = -1
+                col++
                 continue
             }
-            val k = key(argb[i])
+            if (spatialMaxDist > 0 && lastIdx >= 0) {
+                val dr = ((c shr 16) and 0xFF) - lastR
+                val dg = ((c shr 8) and 0xFF) - lastG
+                val db = (c and 0xFF) - lastB
+                if (dr * dr * 2 + dg * dg * 4 + db * db * 3 <= spatialMaxDist) {
+                    indices[i] = lastIdx.toByte()
+                    col++
+                    continue
+                }
+            }
+            val k = key(c)
             var idx = lookup[k]
             if (idx < 0) {
                 val r = expand((k shr 10) and 31)
@@ -141,11 +204,14 @@ internal object GifCodec {
                 lookup[k] = idx
             }
             indices[i] = idx.toByte()
+            lastIdx = idx
+            lastR = pr[idx]
+            lastG = pg[idx]
+            lastB = pb[idx]
+            col++
         }
-        return Indexed(palette, indices, if (hasTransparent) TRANSPARENT_INDEX else -1)
+        return Indexed(palette, indices, transparentIndex, sizeBits, lzwMinCodeSize)
     }
-
-    private const val TRANSPARENT_INDEX = 255
 
     private fun key(c: Int): Int = ((c shr 19) and 31 shl 10) or ((c shr 11) and 31 shl 5) or ((c shr 3) and 31)
 
@@ -202,11 +268,15 @@ internal object GifCodec {
      * reference GIF compressor: the code width grows when the next code to be assigned no longer
      * fits, checked after each code is written, as decoders expect.
      */
-    fun writeLzw(indices: ByteArray, os: OutputStream) {
-        LzwWriter(indices).write(os)
+    fun writeLzw(indices: ByteArray, os: OutputStream, initCodeSize: Int = 8, length: Int = indices.size) {
+        LzwWriter(indices, initCodeSize.coerceIn(2, 8), length.coerceIn(0, indices.size)).write(os)
     }
 
-    private class LzwWriter(private val pixels: ByteArray) {
+    private class LzwWriter(
+        private val pixels: ByteArray,
+        private val initCodeSize: Int,
+        private val length: Int,
+    ) {
         private val maxBits = 12
         private val maxMaxCode = 1 shl maxBits
         private val hsize = 5003
@@ -227,7 +297,6 @@ internal object GifCodec {
         private var blockLen = 0
 
         fun write(os: OutputStream) {
-            val initCodeSize = 8
             os.write(initCodeSize)
             initBits = initCodeSize + 1
             nBits = initBits
@@ -238,7 +307,7 @@ internal object GifCodec {
             htab.fill(-1)
 
             output(clearCode, os)
-            if (pixels.isEmpty()) {
+            if (length == 0) {
                 output(eofCode, os)
                 os.write(0)
                 return
@@ -246,7 +315,7 @@ internal object GifCodec {
             var ent = pixels[0].toInt() and 0xFF
             val hshift = 4 // 8 - log2 steps of hsize up to 65536
             var p = 1
-            outer@ while (p < pixels.size) {
+            outer@ while (p < length) {
                 val c = pixels[p++].toInt() and 0xFF
                 val fcode = (c shl maxBits) + ent
                 var i = (c shl hshift) xor ent

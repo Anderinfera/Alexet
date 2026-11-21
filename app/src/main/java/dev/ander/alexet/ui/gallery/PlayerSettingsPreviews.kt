@@ -150,6 +150,7 @@ private fun PlayerPreviewCanvas(
     } else {
         null
     }
+    val drawTime = rememberPreviewDrawTime(time, cycleMs)
     val accent = MaterialTheme.colorScheme.primary
     val textMeasurer = rememberTextMeasurer()
     val labelText = when (kind) {
@@ -172,7 +173,7 @@ private fun PlayerPreviewCanvas(
             .clip(shape)
             .then(onScreen.modifier),
     ) {
-        val t = time?.value ?: stillFrame
+        val t = drawTime?.value ?: stillFrame
         drawRect(PreviewScreen)
         when (kind) {
             PlayerPreviewKind.VOLUME -> drawSideSwipe(t, rightSide = true, accent = accent)

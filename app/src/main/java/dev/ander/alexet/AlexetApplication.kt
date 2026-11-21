@@ -65,9 +65,14 @@ class AlexetApplication : Application(), SingletonImageLoader.Factory {
                     .build()
             }
             .diskCache {
+                // Room for the thumbnails of a whole large library (MediaStore's ~40 KB each): at
+                // 200 MB only about 5,000 of 31,000 stayed, and the rest were made again while scrolling.
                 DiskCache.Builder()
                     .directory(context.cacheDir.resolve("coil").toOkioPath())
-                    .maxSizeBytes(200L * 1024 * 1024)
+                    // Up to 3 GB; a small phone (under ~60 GB of storage) keeps 5% of it.
+                    .maxSizePercent(0.05)
+                    .minimumMaxSizeBytes(256L * 1024 * 1024)
+                    .maximumMaxSizeBytes(3L * 1024 * 1024 * 1024)
                     .build()
             }
             .components {

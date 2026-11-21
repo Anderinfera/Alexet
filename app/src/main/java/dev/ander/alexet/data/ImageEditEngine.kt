@@ -1301,15 +1301,22 @@ object ImageEditEngine {
         sourceUri: Uri?,
         destinationFile: File,
         editState: ImageEditState,
+        quality: Int = QuickEdit.MAX_QUALITY,
+        scale: Float = 1f,
         onProgress: (Float) -> Unit = {},
     ): ExportResult = withContext(Dispatchers.IO) {
         val job = coroutineContext[kotlinx.coroutines.Job]
         // Stickers are decoded once for all the frames.
         val stickers = HashMap<Uri, Bitmap?>()
+        val profile = QuickEdit.gifProfile(quality)
         val encoder = dev.ander.alexet.data.videoeditor.GifEncoder().apply {
             keepTransparency = true
             setRepeat(0)
+            maxColors = profile.maxColors
+            temporalMaxDist = profile.temporalMaxDist
+            spatialMaxDist = profile.spatialMaxDist
         }
+        var pendingBitmap: Bitmap? = null
         try {
             val data = readSourceBytes(context, sourceFile, sourceUri) ?: return@withContext ExportResult.FAILED
             val info = GifFrameReader.info(data) ?: return@withContext ExportResult.FAILED
@@ -1318,24 +1325,60 @@ object ImageEditEngine {
             if (!encoder.start(destinationFile)) return@withContext ExportResult.FAILED
             var ok = true
             var done = 0
+            var pendingDelay = 0
+            var deltaDecided = false
             val given = GifFrameReader.forEachFrame(data) { pixels, w, h, delayMs ->
                 if (job?.isActive == false) return@forEachFrame false
+                if (pendingBitmap != null && profile.minFrameDelayMs > 0 && pendingDelay < profile.minFrameDelayMs) {
+                    pendingDelay += delayMs
+                    done++
+                    onProgress((done.toFloat() / (info.frameCount + 1)).coerceAtMost(0.99f))
+                    return@forEachFrame true
+                }
+                pendingBitmap?.let { pending ->
+                    encoder.setDelay(pendingDelay)
+                    ok = encoder.addFrame(pending)
+                    pending.recycle()
+                    pendingBitmap = null
+                    if (!ok) return@forEachFrame false
+                }
                 val frame = Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
                 val edited = renderEdits(context, frame, editState, stickerBitmap = { uri ->
                     stickers.getOrPut(uri) { decodeSourceBitmap(context, null, uri, maxDim = 2048) }
                 }, ownsStickers = false)
-                encoder.setDelay(delayMs)
-                ok = encoder.addFrame(edited)
-                edited.recycle()
+                val scaled = if (scale < 0.999f) {
+                    val sw = (edited.width * scale).roundToInt().coerceAtLeast(1)
+                    val sh = (edited.height * scale).roundToInt().coerceAtLeast(1)
+                    Bitmap.createScaledBitmap(edited, sw, sh, true).also {
+                        if (it !== edited) edited.recycle()
+                    }
+                } else {
+                    edited
+                }
+                if (!deltaDecided) {
+                    deltaDecided = true
+                    encoder.optimizeDelta = !info.hasDisposalClear &&
+                        !hasTransparentPixel(scaled) &&
+                        Math.floorMod(editState.rotation, 90) == 0
+                }
+                pendingBitmap = scaled
+                pendingDelay = delayMs
                 done++
-                onProgress(done.toFloat() / info.frameCount)
-                ok
+                onProgress((done.toFloat() / (info.frameCount + 1)).coerceAtMost(0.99f))
+                true
             }
             job?.let { if (!it.isActive) throw CancellationException() }
+            if (ok && pendingBitmap != null) {
+                encoder.setDelay(pendingDelay)
+                ok = encoder.addFrame(pendingBitmap!!)
+                pendingBitmap?.recycle()
+                pendingBitmap = null
+            }
             if (given <= 0 || !ok || !encoder.finish()) {
                 destinationFile.delete()
                 return@withContext ExportResult.FAILED
             }
+            onProgress(1f)
             ExportResult.SAVED
         } catch (oom: OutOfMemoryError) {
             dev.ander.alexet.data.AppLog.e("ImageEditEngine", "Out of memory while exporting a GIF", oom)
@@ -1347,9 +1390,25 @@ object ImageEditEngine {
             dev.ander.alexet.data.AppLog.e("ImageEditEngine", "Error processing GIF", t)
             ExportResult.FAILED
         } finally {
+            pendingBitmap?.let { if (!it.isRecycled) it.recycle() }
             encoder.close()
             stickers.values.forEach { it?.recycle() }
         }
+    }
+
+    internal fun hasTransparentPixel(bitmap: Bitmap): Boolean {
+        if (bitmap.isRecycled) return false
+        val w = bitmap.width
+        val h = bitmap.height
+        if (w <= 0 || h <= 0) return false
+        val row = IntArray(w)
+        for (y in 0 until h) {
+            bitmap.getPixels(row, 0, w, 0, y, w, 1)
+            for (x in 0 until w) {
+                if ((row[x] ushr 24) < 128) return true
+            }
+        }
+        return false
     }
 
     /** The whole file (a GIF is read at once to step through its frames); null over 256 MB or unreadable. */

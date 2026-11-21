@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardActions
@@ -410,22 +411,10 @@ private fun NormalTopBar(
         title = {
             val focusManager = LocalFocusManager.current
             val keyboardController = LocalSoftwareKeyboardController.current
-            AnimatedContent(
-                targetState = searching,
-                // While searching the title fills its slot: when the mode icon goes (AI search),
-                // the field takes the room at once instead of easing after its halo.
-                modifier = if (searching) Modifier.fillMaxWidth() else Modifier,
-                transitionSpec = {
-                    if (targetState) {
-                        (slideInHorizontally(animationSpec = tween(200, easing = FastOutSlowInEasing)) { it / 3 } + fadeIn(animationSpec = tween(180))) togetherWith
-                            (slideOutHorizontally(animationSpec = tween(150, easing = FastOutSlowInEasing)) { -it / 4 } + fadeOut(animationSpec = tween(150)))
-                    } else {
-                        (slideInHorizontally(animationSpec = tween(200, easing = FastOutSlowInEasing)) { -it / 4 } + fadeIn(animationSpec = tween(180))) togetherWith
-                            (slideOutHorizontally(animationSpec = tween(150, easing = FastOutSlowInEasing)) { it / 3 } + fadeOut(animationSpec = tween(150)))
-                    } using androidx.compose.animation.SizeTransform(clip = false)
-                },
-                label = "topBarSearchTransition",
-            ) { isSearching ->
+            // The title and the search field turn like the icons beside them (a cube's faces):
+            // the title up and away, the field from below. Sliding and fading in a slot whose
+            // width follows those icons made the title jump to the side and back.
+            TitleCube(second = searching) { isSearching ->
                 if (isSearching) {
                     var textFieldValue by remember(isSearching) {
                         mutableStateOf(TextFieldValue(text = query, selection = TextRange(query.length)))
@@ -489,7 +478,10 @@ private fun NormalTopBar(
                     )
                 } else {
                     val appName = stringResource(R.string.app_name)
-                    CubeTitle(text = title ?: appName, appName = appName)
+                    // As tall as the field: the slot keeps its height when one replaces the other.
+                    Box(Modifier.heightIn(min = TextFieldDefaults.MinHeight), contentAlignment = Alignment.CenterStart) {
+                        CubeTitle(text = title ?: appName, appName = appName)
+                    }
                 }
             }
         },
@@ -626,7 +618,7 @@ private fun NormalTopBar(
                         }
                         if (onToggleSmartSearch != null) {
                             IconButton(onClick = if (smartFolderAllowed) onToggleSmartSearch else onSmartUnavailable) {
-                                SmartSearchIcon(active = smart, enabled = smartFolderAllowed, aiEffects = aiEffects)
+                                SmartSearchIcon(active = smart, enabled = smartFolderAllowed, aiEffects = aiEffects, animate = searching)
                             }
                         }
                     }
@@ -642,6 +634,48 @@ private fun NormalTopBar(
 }
 
 /**
+ * The title's slot as two faces of a turning cube, as [CubeFaces] turns the icons beside it:
+ * [second] turns the first face (the title) up and away and brings the second (the search
+ * field) from below; back again the other way. The slot keeps the bar's width and the faces
+ * start at its left. Light mode: no turn.
+ */
+@Composable
+private fun TitleCube(second: Boolean, face: @Composable (second: Boolean) -> Unit) {
+    val light = LocalLightMode.current
+    val progress by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (second) 1f else 0f,
+        animationSpec = if (light) androidx.compose.animation.core.snap() else tween(320, easing = FastOutSlowInEasing),
+        label = "titleCube",
+    )
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+        if (progress < 1f) {
+            Box(
+                Modifier.graphicsLayer {
+                    val p = progress
+                    transformOrigin = TransformOrigin(0.5f, 1f)
+                    translationY = -size.height * p
+                    rotationX = 90f * p
+                    alpha = 1f - 0.6f * p
+                    cameraDistance = 12f * density
+                },
+            ) { face(false) }
+        }
+        if (progress > 0f) {
+            Box(
+                Modifier.graphicsLayer {
+                    val p = progress
+                    transformOrigin = TransformOrigin(0.5f, 0f)
+                    translationY = size.height * (1f - p)
+                    rotationX = -90f * (1f - p)
+                    alpha = 0.4f + 0.6f * p
+                    cameraDistance = 12f * density
+                },
+            ) { face(true) }
+        }
+    }
+}
+
+/**
  * Two faces of a turning cube, as the title's: [second] turns the first face up and away and
  * brings the second from below; back again the other way. Light mode: no turn.
  */
@@ -653,7 +687,10 @@ private fun CubeFaces(second: Boolean, first: @Composable () -> Unit, secondCont
         animationSpec = if (light) androidx.compose.animation.core.snap() else tween(320, easing = FastOutSlowInEasing),
         label = "cubeFaces",
     )
-    Box(contentAlignment = Alignment.CenterEnd) {
+    // As wide as the turn says, between the two faces' widths: holding the wider face's width to
+    // the end of the turn and then dropping it pushed the title (the search field) back and forth.
+    androidx.compose.ui.layout.Layout(
+        content = {
         if (progress < 1f) {
             Box(
                 Modifier.graphicsLayer {
@@ -677,6 +714,24 @@ private fun CubeFaces(second: Boolean, first: @Composable () -> Unit, secondCont
                     cameraDistance = 12f * density
                 },
             ) { secondContent() }
+        }
+        },
+    ) { measurables, constraints ->
+        val loose = constraints.copy(minWidth = 0, minHeight = 0)
+        val placeables = measurables.map { it.measure(loose) }
+        val firstShown = progress < 1f
+        val secondShown = progress > 0f
+        val firstWidth = if (firstShown) placeables.first().width else 0
+        val secondWidth = if (secondShown) placeables.last().width else 0
+        val width = when {
+            firstShown && secondShown -> (firstWidth + (secondWidth - firstWidth) * progress).toInt()
+            firstShown -> firstWidth
+            else -> secondWidth
+        }.coerceIn(constraints.minWidth, constraints.maxWidth)
+        val height = (placeables.maxOfOrNull { it.height } ?: 0).coerceIn(constraints.minHeight, constraints.maxHeight)
+        layout(width, height) {
+            // Both faces at the end, centered vertically (as the Box placed them).
+            placeables.forEach { it.place(width - it.width, (height - it.height) / 2) }
         }
     }
 }
@@ -1394,7 +1449,13 @@ private val AI_FIELD_RADIUS = 28.dp
 
 /** ✨ of the search field: the AI palette's colors circling in it while AI search is on. */
 @Composable
-private fun SmartSearchIcon(active: Boolean, enabled: Boolean, aiEffects: dev.ander.alexet.data.AiEffectsConfig) {
+private fun SmartSearchIcon(
+    active: Boolean,
+    enabled: Boolean,
+    aiEffects: dev.ander.alexet.data.AiEffectsConfig,
+    /** The colors circle only during a search; otherwise they stand still (no redraw every frame). */
+    animate: Boolean,
+) {
     val description = stringResource(R.string.search_mode_smart)
     if (!enabled) {
         Icon(Icons.Rounded.AutoAwesome, contentDescription = description, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f))
@@ -1405,7 +1466,11 @@ private fun SmartSearchIcon(active: Boolean, enabled: Boolean, aiEffects: dev.an
         return
     }
     val colors = aiColors(aiEffects, dev.ander.alexet.data.AiEffect.SEARCH_FIELD)
-    val phase = rememberAiPhase(aiEffects.style(dev.ander.alexet.data.AiEffect.SEARCH_FIELD).speed)
+    val phase = if (animate) {
+        rememberAiPhase(aiEffects.style(dev.ander.alexet.data.AiEffect.SEARCH_FIELD).speed)
+    } else {
+        remember { androidx.compose.runtime.mutableFloatStateOf(0.1f) }
+    }
     Icon(
         Icons.Rounded.AutoAwesome,
         contentDescription = description,
@@ -1416,7 +1481,10 @@ private fun SmartSearchIcon(active: Boolean, enabled: Boolean, aiEffects: dev.an
                 drawContent()
                 val brush = androidx.compose.ui.graphics.Brush.sweepGradient(
                     List(7) { dev.ander.alexet.ui.components.aiglow.paletteAt(colors, phase.value + it / 6f) },
-                    center = center,
+                    // Between the two small stars (x 19 of the glyph's 24), so the colors circle
+                    // around the whole icon. A quarter pixel off the middle row: on that row the
+                    // gradient took the opposite side's color (a line), now through empty space.
+                    center = androidx.compose.ui.geometry.Offset(size.width * 19f / 24f, size.height / 2f + 0.25f),
                 )
                 drawRect(brush, blendMode = androidx.compose.ui.graphics.BlendMode.SrcIn)
             },

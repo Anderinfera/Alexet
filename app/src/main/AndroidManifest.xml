@@ -14,6 +14,8 @@
     <!-- A video or song goes on playing after the app is left (PlaybackService). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.SET_WALLPAPER" />
+    <!-- Progress of downloads in PipePipe Andercoded, granted by the user. -->
+    <uses-permission android:name="dev.ander.pipepipe.permission.READ_DOWNLOAD_PROGRESS" />
     <!-- An APK shown with "See all files" opens in the system installer. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission
@@ -52,7 +54,7 @@
         <package android:name="dev.anilbeesetti.nextplayer" />
         <package android:name="dev.anilbeesetti.nextplayer.debug" />
         <package android:name="dev.anilbeesetti.nextplayer.release" />
-        <package android:name="InfinityLoop1309.NewPipeEnhanced" />
+        <package android:name="dev.ander.pipepipe" />
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <category android:name="android.intent.category.DEFAULT" />

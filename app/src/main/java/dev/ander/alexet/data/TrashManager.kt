@@ -167,6 +167,9 @@ class TrashManager(private val context: Context) {
         }
     }
 
+    /** The index text of each entry, by entry (entries never change once made). */
+    private val entryJson = java.util.IdentityHashMap<TrashedItem, String>()
+
     /** Entries of the batch being moved, written before its first file moves (see [moveToTrash]). */
     private val pendingJournal: File
         get() = File(trashDir, "$INDEX_NAME.pending")
@@ -264,9 +267,21 @@ class TrashManager(private val context: Context) {
      * files are in the trash folder, and the next load finds them again (see [recoverUnindexed]).
      */
     private fun saveInternal(list: List<TrashedItem>): Boolean {
-        val array = JSONArray()
-        list.forEach { item ->
-            array.put(item.toJson())
+        // Each entry's JSON is made once and kept: a folder moved to the trash saves the index after
+        // every batch, and building the JSON of the whole trash each time took 0.1-1 s with
+        // thousands of entries. The text written is the same as JSONArray's.
+        val text = synchronized(entryJson) {
+            val kept = java.util.IdentityHashMap<TrashedItem, String>(list.size * 2)
+            val out = StringBuilder(list.size * 512 + 2).append('[')
+            list.forEachIndexed { i, item ->
+                val json = entryJson[item] ?: item.toJson().toString()
+                kept[item] = json
+                if (i > 0) out.append(',')
+                out.append(json)
+            }
+            entryJson.clear()
+            entryJson.putAll(kept)
+            out.append(']').toString()
         }
         val parent = indexFile.parentFile ?: trashDir
         if (!parent.exists()) parent.mkdirs()
@@ -275,7 +290,7 @@ class TrashManager(private val context: Context) {
         try {
             java.io.FileOutputStream(tempFile).use { out ->
                 // Without indentation: a third of the size, so a big trash stays under the limit.
-                out.write(array.toString().toByteArray(Charsets.UTF_8))
+                out.write(text.toByteArray(Charsets.UTF_8))
                 out.fd.sync()
             }
             if (!tempFile.renameTo(indexFile)) {

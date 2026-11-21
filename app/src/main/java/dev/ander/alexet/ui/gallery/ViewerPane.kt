@@ -832,6 +832,11 @@ private fun MediaPager(
         zoomStates.keys.retainAll(nearIds)
     }
 
+    // One video player for all video pages of this viewer: taken by the page shown, given back
+    // cleared when it is swiped away, released when the viewer closes.
+    val viewerContext = androidx.compose.ui.platform.LocalContext.current
+    val sharedPlayer = remember { dev.ander.alexet.ui.player.SharedVideoPlayer(viewerContext.applicationContext) }
+    DisposableEffect(sharedPlayer) { onDispose { sharedPlayer.release() } }
     HorizontalPager(
         state = pagerState,
         modifier = Modifier.fillMaxSize().background(Color.Black),
@@ -873,6 +878,7 @@ private fun MediaPager(
                     rememberState = rememberPlayerState,
                     onUpdatePlayerConfig = onUpdatePlayerConfig,
                     orientationKeeper = orientationKeeper,
+                    sharedPlayer = sharedPlayer,
                     topArrow = videoTopArrow,
                     bottomArrow = videoBottomArrow,
                     modifier = Modifier.fillMaxSize(),

@@ -226,7 +226,9 @@ private fun optionPreviewInfo(kind: OptionPreviewKind): Pair<Int, Int> = when (k
  * (clipped by the list) are empty then. Starts true: a picture in sight moves from its first frame.
  */
 internal class PreviewOnScreen {
-    var value by mutableStateOf(true)
+    // Starts still: a category opening composed every picture of it, and each started (then
+    // stopped) its animation before the first layout said which are in sight.
+    var value by mutableStateOf(false)
         private set
 
     /** Goes on the picture's own layout. */
@@ -238,6 +240,23 @@ internal class PreviewOnScreen {
 
 @Composable
 internal fun rememberPreviewOnScreen(): PreviewOnScreen = remember { PreviewOnScreen() }
+
+/** About 30 frames a second for the small pictures: they look the same and redraw half as often (or a quarter at 120 Hz). */
+private const val PREVIEW_FRAME_MS = 33f
+
+/**
+ * [time] (0..1 of a [cycleMs] cycle) in steps of [PREVIEW_FRAME_MS] for drawing: each picture
+ * redrew and recorded its whole canvas at the screen's rate. Full rate in the enlarged info card.
+ */
+@Composable
+internal fun rememberPreviewDrawTime(time: State<Float>?, cycleMs: Int): State<Float>? {
+    if (time == null) return null
+    if (LocalPreviewScale.current != 1f) return time
+    return remember(time, cycleMs) {
+        val step = PREVIEW_FRAME_MS / cycleMs.toFloat()
+        androidx.compose.runtime.derivedStateOf { kotlin.math.floor(time.value / step) * step }
+    }
+}
 
 @Composable
 private fun OptionPreviewCanvas(
@@ -283,6 +302,7 @@ private fun OptionPreviewCanvas(
     } else {
         null
     }
+    val drawTime = rememberPreviewDrawTime(time, cycleMs)
     val accent = MaterialTheme.colorScheme.primary
     val textMeasurer = rememberTextMeasurer()
     val texts: List<Pair<String, TextUnit>> = when (kind) {
@@ -308,7 +328,7 @@ private fun OptionPreviewCanvas(
             .clip(shape)
             .then(onScreen.modifier),
     ) {
-        val t = time?.value ?: stillFrame
+        val t = drawTime?.value ?: stillFrame
         drawRect(PreviewScreen)
         when (kind) {
             OptionPreviewKind.EXTRA_VIEW -> drawExtraView(t, accent)
@@ -1090,7 +1110,9 @@ internal val LocalPreviewScale = androidx.compose.runtime.compositionLocalOf { 1
 @Composable
 private fun AnimatedDrawablePreview(drawableRes: Int, active: Boolean, modifier: Modifier) {
     val k = LocalPreviewScale.current
-    val animate = active && !LocalLightMode.current
+    // Like the drawn pictures: still once scrolled out of sight (it asked for frames all the time).
+    val onScreen = rememberPreviewOnScreen()
+    val animate = active && !LocalLightMode.current && onScreen.value
     val frame = if (k == 1f) {
         modifier.size(width = 56.dp, height = 40.dp)
     } else {
@@ -1100,7 +1122,8 @@ private fun AnimatedDrawablePreview(drawableRes: Int, active: Boolean, modifier:
         frame
             .graphicsLayer { alpha = if (active) 1f else 0.45f }
             .clip(RoundedCornerShape(8.dp * k))
-            .background(PreviewScreen),
+            .background(PreviewScreen)
+            .then(onScreen.modifier),
     ) {
         androidx.compose.ui.viewinterop.AndroidView(
             factory = { context ->

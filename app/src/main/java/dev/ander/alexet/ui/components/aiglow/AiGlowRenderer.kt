@@ -22,6 +22,7 @@ import androidx.compose.ui.graphics.colorspace.ColorSpaces
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import kotlin.math.ceil
 import kotlin.math.exp
@@ -80,7 +81,10 @@ class AiGlowRenderer {
         if (alpha <= 0.001f || colors.isEmpty() || rect.isEmpty) return
         val area = when (mode) {
             AiGlowMode.HALO -> rect.inflate(glowPx + strokePx)
-            AiGlowMode.EDGE, AiGlowMode.TOP_WASH -> rect
+            AiGlowMode.EDGE -> rect
+            // The wash is 0 past 2.4 x its reach (both ways of drawing it): the rest of the area
+            // was computed for nothing, about two thirds of the screen every frame.
+            AiGlowMode.TOP_WASH -> Rect(rect.left, rect.top, rect.right, minOf(rect.bottom, rect.top + glowPx * 2.4f + 2f))
         }
         val radii = corners ?: AiCorners.all(cornerRadiusPx)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && shader != null) {
@@ -118,14 +122,61 @@ class AiGlowRenderer {
         s.setFloatUniform("phase", phase)
         s.setFloatUniform("intensity", alpha.coerceIn(0f, 2f))
         val count = colors.size.coerceAtMost(MAX_COLORS)
-        val labs = oklabOf(colors)
-        for (i in 0 until MAX_COLORS) {
-            // Blended in Oklab by the shader: even steps between the colors, no gray middles.
-            val lab = labs[i % count]
-            s.setFloatUniform("c$i", lab[0], lab[1], lab[2], lab[3])
+        // The same palette on every tile and frame: sent to the shader only when it changes.
+        if (colors !== uploadedColors) {
+            val labs = oklabOf(colors)
+            for (i in 0 until MAX_COLORS) {
+                // Blended in Oklab by the shader: even steps between the colors, no gray middles.
+                val lab = labs[i % count]
+                s.setFloatUniform(COLOR_UNIFORMS[i], lab[0], lab[1], lab[2], lab[3])
+            }
+            s.setFloatUniform("count", count.toFloat())
+            uploadedColors = colors
         }
-        s.setFloatUniform("count", count.toFloat())
-        drawRect(brush = ShaderBrush(s), topLeft = area.topLeft, size = area.size)
+        val brush = shaderBrush ?: ShaderBrush(s).also { shaderBrush = it }
+        val band = maxOf(glow * 3f, maxOf(corners.topLeft, corners.topRight, corners.bottomRight, corners.bottomLeft), radius) + stroke + 2f
+        if (mode == AiGlowMode.EDGE && area.width > band * 2f && area.height > band * 2f) {
+            // The edge glow fades to nothing about 3 x its reach in from the border: only the four
+            // bands along the edges are drawn, not the whole (mostly empty) middle.
+            drawRect(brush, Offset(area.left, area.top), Size(area.width, band))
+            drawRect(brush, Offset(area.left, area.bottom - band), Size(area.width, band))
+            drawRect(brush, Offset(area.left, area.top + band), Size(band, area.height - band * 2f))
+            drawRect(brush, Offset(area.right - band, area.top + band), Size(band, area.height - band * 2f))
+        } else {
+            drawRect(brush = brush, topLeft = area.topLeft, size = area.size)
+        }
+    }
+
+    /** Palette last sent to the shader (by identity) and its brush, kept between frames. */
+    private var uploadedColors: List<Color>? = null
+    private var shaderBrush: ShaderBrush? = null
+
+    /** Gradient stops of the fallback, kept for the frame: every tile of a glint draws the same. */
+    private var stopsColors: List<Color>? = null
+    private var stopsPhase = Float.NaN
+    private var stopsTurns = Float.NaN
+    private var stops: List<Color> = emptyList()
+    private var edgesColors: List<Color>? = null
+    private var edgesPhase = Float.NaN
+    private var edges: List<Color> = emptyList()
+
+    private fun stopsFor(colors: List<Color>, phase: Float, turns: Float = 1f): List<Color> {
+        if (colors !== stopsColors || phase != stopsPhase || turns != stopsTurns) {
+            stops = paletteStops(colors, phase, turns)
+            stopsColors = colors
+            stopsPhase = phase
+            stopsTurns = turns
+        }
+        return stops
+    }
+
+    private fun edgesFor(colors: List<Color>, phase: Float): List<Color> {
+        if (colors !== edgesColors || phase != edgesPhase) {
+            edges = EDGE_TURNS.map { paletteAt(colors, phase + it) }
+            edgesColors = colors
+            edgesPhase = phase
+        }
+        return edges
     }
 
     private fun DrawScope.drawFallback(
@@ -141,10 +192,13 @@ class AiGlowRenderer {
         alpha: Float,
     ) {
         val a = alpha.coerceIn(0f, 1f)
-        drawIntoCanvas { canvas -> canvas.saveLayer(area, Paint()) }
+        // A thin glint (a line with a short glow, on every folder tile) shows no bands: no offscreen
+        // layer and no dithering noise for it, which cost a layer per tile every frame on old phones.
+        val dither = !(mode == AiGlowMode.EDGE && stroke > 0f)
+        if (dither) drawIntoCanvas { canvas -> canvas.saveLayer(area, Paint()) }
         when (mode) {
             AiGlowMode.HALO -> {
-                val sweep = Brush.sweepGradient(paletteStops(colors, phase), center = rect.center)
+                val sweep = Brush.sweepGradient(stopsFor(colors, phase), center = rect.center)
                 val steps = 12
                 for (i in 0..steps) {
                     val t = i / steps.toFloat()
@@ -170,10 +224,11 @@ class AiGlowRenderer {
                     CornerRadius(corners.bottomRight),
                     CornerRadius(corners.bottomLeft),
                 )
-                // The rounded corners cut the glow along the shape's own curve.
-                clipPath(Path().apply { addRoundRect(shape) }) {
+                val square = corners.topLeft <= 0f && corners.topRight <= 0f && corners.bottomRight <= 0f && corners.bottomLeft <= 0f
+                // The rounded corners cut the glow along the shape's own curve (square: a plain clip).
+                val inside: DrawScope.() -> Unit = {
                     val g = if (stroke > 0f) a * 0.6f else a
-                    val edges = listOf(0f, 0.25f, 0.5f, 0.75f).map { paletteAt(colors, phase + it) }
+                    val edges = edgesFor(colors, phase)
                     drawRect(Brush.verticalGradient(listOf(edges[0], Color.Transparent), rect.top, rect.top + glow), rect.topLeft, Size(rect.width, glow), alpha = g)
                     drawRect(Brush.horizontalGradient(listOf(Color.Transparent, edges[1]), rect.right - glow, rect.right), Offset(rect.right - glow, rect.top), Size(glow, rect.height), alpha = g)
                     drawRect(Brush.verticalGradient(listOf(Color.Transparent, edges[2]), rect.bottom - glow, rect.bottom), Offset(rect.left, rect.bottom - glow), Size(rect.width, glow), alpha = g)
@@ -181,7 +236,7 @@ class AiGlowRenderer {
                     if (stroke > 0f) {
                         val r = rect.deflate(stroke / 2f)
                         drawRoundRect(
-                            brush = Brush.sweepGradient(paletteStops(colors, phase), center = rect.center),
+                            brush = Brush.sweepGradient(stopsFor(colors, phase), center = rect.center),
                             topLeft = r.topLeft,
                             size = r.size,
                             cornerRadius = CornerRadius(corners.topLeft),
@@ -190,9 +245,14 @@ class AiGlowRenderer {
                         )
                     }
                 }
+                if (square) {
+                    clipRect(rect.left, rect.top, rect.right, rect.bottom, block = inside)
+                } else {
+                    clipPath(Path().apply { addRoundRect(shape) }, block = inside)
+                }
             }
             AiGlowMode.TOP_WASH -> {
-                drawRect(Brush.horizontalGradient(paletteStops(colors, phase, turns = 0.85f), rect.left, rect.right), rect.topLeft, rect.size, alpha = a)
+                drawRect(Brush.horizontalGradient(stopsFor(colors, phase, turns = 0.85f), rect.left, rect.right), rect.topLeft, rect.size, alpha = a)
                 drawRect(
                     Brush.verticalGradient(listOf(Color.Black, Color.Black.copy(alpha = 0.35f), Color.Transparent), rect.top, rect.top + glow),
                     rect.topLeft,
@@ -201,8 +261,10 @@ class AiGlowRenderer {
                 )
             }
         }
-        drawRect(brush = noiseBrush, topLeft = area.topLeft, size = area.size, blendMode = BlendMode.SrcAtop)
-        drawIntoCanvas { canvas -> canvas.restore() }
+        if (dither) {
+            drawRect(brush = noiseBrush, topLeft = area.topLeft, size = area.size, blendMode = BlendMode.SrcAtop)
+            drawIntoCanvas { canvas -> canvas.restore() }
+        }
     }
 
     private companion object {
@@ -221,6 +283,8 @@ class AiGlowRenderer {
             )
         }
         const val NOISE_ALPHA = 7
+        val COLOR_UNIFORMS = Array(MAX_COLORS) { "c$it" }
+        val EDGE_TURNS = listOf(0f, 0.25f, 0.5f, 0.75f)
 
         const val SHADER = """
             uniform float4 rect;

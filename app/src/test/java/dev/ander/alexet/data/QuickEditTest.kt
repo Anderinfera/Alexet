@@ -103,9 +103,67 @@ class QuickEditTest {
     }
 
     @Test
-    fun gifsAreNotOffered() {
-        assertFalse(QuickEdit.supports(media("a.gif", "image/gif")))
+    fun gifsAreSupported() {
+        assertTrue(QuickEdit.supports(media("a.gif", "image/gif")))
         assertTrue(QuickEdit.supports(media("a.jpg", "image/jpeg")))
+        assertFalse(QuickEdit.supports(media("a.gif", "image/gif").copy(isOtherFile = true)))
+        assertFalse(
+            QuickEdit.supports(
+                media("a.gif", "image/gif").copy(absolutePath = "/storage/a.gif${SecureFolderManager.ENC_EXTENSION}"),
+            ),
+        )
+    }
+
+    @Test
+    fun gifsKeepGifExtensionAtAnyQuality() {
+        assertEquals("gif", QuickEdit.photoExtension(media("a.gif", "image/gif"), 75))
+        assertEquals("gif", QuickEdit.photoExtension(media("a.gif", "image/gif"), 100))
+        assertEquals("gif", QuickEdit.photoExtension(media("a.GIF", "application/octet-stream"), 10))
+    }
+
+    @Test
+    fun gifProfileBoundariesAndMonotonicity() {
+        val high = QuickEdit.gifProfile(QuickEdit.MAX_QUALITY)
+        assertEquals(256, high.maxColors)
+        assertEquals(0, high.temporalMaxDist)
+        assertEquals(0, high.spatialMaxDist)
+        assertEquals(0, high.minFrameDelayMs)
+
+        val mid = QuickEdit.gifProfile(QuickEdit.DEFAULT_QUALITY)
+        assertTrue(mid.maxColors in 16..256)
+        assertTrue(mid.temporalMaxDist > 0)
+        assertTrue(mid.spatialMaxDist > 0)
+        assertEquals(0, mid.minFrameDelayMs)
+
+        val low = QuickEdit.gifProfile(QuickEdit.MIN_QUALITY)
+        assertEquals(16, low.maxColors)
+        assertTrue(low.temporalMaxDist > mid.temporalMaxDist)
+        assertTrue(low.spatialMaxDist > mid.spatialMaxDist)
+        assertEquals(140, low.minFrameDelayMs)
+
+        var prev = low
+        for (q in (QuickEdit.MIN_QUALITY + 1)..QuickEdit.MAX_QUALITY) {
+            val cur = QuickEdit.gifProfile(q)
+            assertTrue("maxColors at $q", cur.maxColors >= prev.maxColors)
+            assertTrue("temporalMaxDist at $q", cur.temporalMaxDist <= prev.temporalMaxDist)
+            assertTrue("spatialMaxDist at $q", cur.spatialMaxDist <= prev.spatialMaxDist)
+            assertTrue("minFrameDelayMs at $q", cur.minFrameDelayMs <= prev.minFrameDelayMs)
+            prev = cur
+        }
+    }
+
+    @Test
+    fun keptGifFrameCountThinsFastAnimationsAndPreservesSlowOnes() {
+        assertEquals(0, QuickEdit.keptGifFrameCount(IntArray(0), 0))
+        assertEquals(0, QuickEdit.keptGifFrameCount(IntArray(0), 100))
+        assertEquals(1, QuickEdit.keptGifFrameCount(intArrayOf(30), 140))
+
+        val fast30fps = IntArray(30) { 30 }
+        assertEquals(30, QuickEdit.keptGifFrameCount(fast30fps, 0))
+        assertEquals(10, QuickEdit.keptGifFrameCount(fast30fps, 90))
+
+        val slowSlideshow = IntArray(5) { 500 }
+        assertEquals(5, QuickEdit.keptGifFrameCount(slowSlideshow, 140))
     }
 
     @Test

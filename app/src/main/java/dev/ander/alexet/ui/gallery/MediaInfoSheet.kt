@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -69,9 +70,12 @@ fun MediaInfoSheet(
     val details by produceState<FolderDetails?>(initialValue = null, singleFolder) {
         value = singleFolder?.let { album -> withContext(Dispatchers.IO) { runCatching { folderDetails(album) }.getOrNull() } }
     }
+    val singleFile = media.size == 1 && albums.isEmpty()
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        // One file: the sheet opens half way with the usual info; pulled up, it shows the rest
+        // (camera, exposure, place, codecs...) below it.
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = !singleFile),
     ) {
         Column(
             Modifier
@@ -83,7 +87,10 @@ fun MediaInfoSheet(
                 .padding(bottom = 32.dp),
         ) {
             when {
-                media.size == 1 && albums.isEmpty() -> SingleFileInfo(media.first())
+                singleFile -> {
+                    SingleFileInfo(media.first())
+                    MoreFileInfo(media.first())
+                }
                 albums.size == 1 && media.isEmpty() -> SingleAlbumInfo(albums.first(), details, foldersSize)
                 else -> {
                     SelectionSummary(media, albums, foldersSize)
@@ -173,6 +180,245 @@ private fun rememberDurationMs(item: GalleryMedia): Long {
         }
     }
     return durationMs
+}
+
+/**
+ * What a pulled-up info sheet adds for one file: the camera and its settings, the place and the
+ * app that saved it for a photo; codecs, bit rate, frame rate, sound and HDR for a video. Read
+ * in the background; a private (encrypted) file shows only what needs no reading of its content.
+ */
+@Composable
+private fun MoreFileInfo(item: GalleryMedia) {
+    val context = LocalContext.current
+    val rows by produceState<List<Pair<String, String>>?>(initialValue = null, item.id, item.absolutePath) {
+        value = withContext(Dispatchers.IO) { runCatching { readMoreInfo(context, item) }.getOrDefault(emptyList()) }
+    }
+    // Some room from the start: the sheet can then open half way and be pulled up to here.
+    Column(Modifier.fillMaxWidth().heightIn(min = 220.dp)) {
+        HorizontalDivider(Modifier.padding(top = 12.dp, bottom = 8.dp))
+        Text(
+            text = stringResource(R.string.info_more),
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+        )
+        val list = rows
+        when {
+            list == null -> InfoRow(stringResource(R.string.info_more), "…")
+            list.isEmpty() -> Text(
+                text = stringResource(R.string.info_more_none),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+            )
+            else -> list.forEach { (label, value) -> InfoRow(label, value) }
+        }
+    }
+}
+
+private fun readMoreInfo(context: Context, item: GalleryMedia): List<Pair<String, String>> {
+    val out = ArrayList<Pair<String, String>>()
+    fun add(labelRes: Int, value: String?) {
+        if (!value.isNullOrBlank()) out += context.getString(labelRes) to value
+    }
+    if (item.sizeBytes > 0L) {
+        add(R.string.info_exact_size, String.format(Locale.getDefault(), "%,d B", item.sizeBytes))
+    }
+    val readable = !item.isEncrypted && !item.isOtherFile
+    if (readable && item.isVideo) {
+        readVideoInfo(context, item, ::add)
+    } else if (readable) {
+        readPhotoInfo(context, item, ::add)
+    }
+    add(R.string.info_saved_by, ownerAppOf(context, item))
+    return out
+}
+
+private fun openExif(context: Context, item: GalleryMedia): ExifInterface? = runCatching {
+    val path = item.absolutePath
+    if (path != null && File(path).exists()) {
+        ExifInterface(path)
+    } else {
+        context.contentResolver.openInputStream(item.uri)?.use { ExifInterface(it) }
+    }
+}.getOrNull()
+
+private fun readPhotoInfo(context: Context, item: GalleryMedia, add: (Int, String?) -> Unit) {
+    val exif = openExif(context, item) ?: return
+    val make = exif.getAttribute(ExifInterface.TAG_MAKE)?.trim().orEmpty()
+    val model = exif.getAttribute(ExifInterface.TAG_MODEL)?.trim().orEmpty()
+    add(
+        R.string.info_camera,
+        when {
+            model.isEmpty() -> make
+            make.isEmpty() || model.startsWith(make, ignoreCase = true) -> model
+            else -> "$make $model"
+        },
+    )
+    add(R.string.info_lens, exif.getAttribute("LensModel")?.trim())
+    exif.getAttributeDouble(ExifInterface.TAG_F_NUMBER, 0.0).takeIf { it > 0.0 }?.let {
+        add(R.string.info_aperture, "f/" + String.format(Locale.US, "%.1f", it).removeSuffix(".0"))
+    }
+    exif.getAttributeDouble(ExifInterface.TAG_EXPOSURE_TIME, 0.0).takeIf { it > 0.0 }?.let { sec ->
+        add(
+            R.string.info_exposure,
+            if (sec < 1.0) "1/${Math.round(1.0 / sec)} s" else String.format(Locale.getDefault(), "%.1f s", sec),
+        )
+    }
+    (exif.getAttribute("PhotographicSensitivity")
+        ?: @Suppress("DEPRECATION") exif.getAttribute(ExifInterface.TAG_ISO_SPEED_RATINGS))
+        ?.trim()?.takeIf { it.isNotEmpty() && it != "0" }
+        ?.let { add(R.string.info_iso, "ISO $it") }
+    exif.getAttributeDouble(ExifInterface.TAG_FOCAL_LENGTH, 0.0).takeIf { it > 0.0 }?.let { mm ->
+        val shown = String.format(Locale.getDefault(), "%.1f mm", mm)
+        val equiv = exif.getAttributeInt(ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM, 0)
+        add(R.string.info_focal, if (equiv > 0) context.getString(R.string.info_focal_35, shown, equiv) else shown)
+    }
+    if (exif.getAttribute(ExifInterface.TAG_FLASH) != null) {
+        val fired = exif.getAttributeInt(ExifInterface.TAG_FLASH, 0) and 1 == 1
+        add(R.string.info_flash, context.getString(if (fired) R.string.info_flash_fired else R.string.info_flash_off))
+    }
+    val latLong = FloatArray(2)
+    @Suppress("DEPRECATION")
+    if (exif.getLatLong(latLong)) {
+        add(R.string.info_location, formatCoordinates(latLong[0].toDouble(), latLong[1].toDouble()))
+        exif.getAltitude(Double.NaN).takeIf { !it.isNaN() }?.let {
+            add(R.string.info_altitude, String.format(Locale.getDefault(), "%.0f m", it))
+        }
+    }
+    when (exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+        ExifInterface.ORIENTATION_ROTATE_90 -> add(R.string.info_orientation, "90°")
+        ExifInterface.ORIENTATION_ROTATE_180 -> add(R.string.info_orientation, "180°")
+        ExifInterface.ORIENTATION_ROTATE_270 -> add(R.string.info_orientation, "270°")
+    }
+    add(R.string.info_software, exif.getAttribute(ExifInterface.TAG_SOFTWARE)?.trim())
+}
+
+private fun readVideoInfo(context: Context, item: GalleryMedia, add: (Int, String?) -> Unit) {
+    var videoMime: String? = null
+    var frameRate = 0f
+    var audio: String? = null
+    var hasAudio = false
+    val extractor = android.media.MediaExtractor()
+    try {
+        val path = item.absolutePath
+        if (path != null && File(path).exists()) extractor.setDataSource(path) else extractor.setDataSource(context, item.uri, null)
+        for (i in 0 until extractor.trackCount) {
+            val format = extractor.getTrackFormat(i)
+            val mime = format.getString(android.media.MediaFormat.KEY_MIME) ?: continue
+            if (mime.startsWith("video/") && videoMime == null) {
+                videoMime = mime
+                if (format.containsKey(android.media.MediaFormat.KEY_FRAME_RATE)) {
+                    frameRate = runCatching { format.getInteger(android.media.MediaFormat.KEY_FRAME_RATE).toFloat() }
+                        .getOrElse { runCatching { format.getFloat(android.media.MediaFormat.KEY_FRAME_RATE) }.getOrDefault(0f) }
+                }
+            } else if (mime.startsWith("audio/") && !hasAudio) {
+                hasAudio = true
+                val parts = ArrayList<String>()
+                parts += codecName(mime)
+                if (format.containsKey(android.media.MediaFormat.KEY_SAMPLE_RATE)) {
+                    val hz = format.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)
+                    parts += String.format(Locale.getDefault(), "%.1f kHz", hz / 1000.0).replace(",0 ", " ").replace(".0 ", " ")
+                }
+                if (format.containsKey(android.media.MediaFormat.KEY_CHANNEL_COUNT)) {
+                    parts += when (val ch = format.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)) {
+                        1 -> "mono"
+                        2 -> "stereo"
+                        else -> "$ch ch"
+                    }
+                }
+                audio = parts.joinToString(", ")
+            }
+        }
+    } catch (_: Throwable) {
+    } finally {
+        runCatching { extractor.release() }
+    }
+    add(R.string.info_video_codec, videoMime?.let(::codecName))
+
+    val retriever = MediaMetadataRetriever()
+    try {
+        dev.ander.alexet.data.Mp4MetaRepair.setDataSource(retriever, context, item.absolutePath, item.uri)
+        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toLongOrNull()?.takeIf { it > 0 }?.let { bps ->
+            add(
+                R.string.info_bitrate,
+                if (bps >= 1_000_000) String.format(Locale.getDefault(), "%.1f Mb/s", bps / 1_000_000.0)
+                else "${bps / 1000} kb/s",
+            )
+        }
+        if (frameRate <= 0f && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            val frames = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT)?.toLongOrNull() ?: 0L
+            val ms = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            if (frames > 0 && ms > 0) frameRate = frames * 1000f / ms
+        }
+        if (frameRate > 0f) {
+            add(R.string.info_frame_rate, String.format(Locale.getDefault(), "%.2f", frameRate).trimEnd('0').trimEnd(',', '.') + " fps")
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            when (retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_COLOR_TRANSFER)?.toIntOrNull()) {
+                android.media.MediaFormat.COLOR_TRANSFER_ST2084 -> add(R.string.info_hdr, "HDR10 (PQ)")
+                android.media.MediaFormat.COLOR_TRANSFER_HLG -> add(R.string.info_hdr, "HLG")
+            }
+        }
+        add(R.string.info_audio, if (hasAudio) audio else context.getString(R.string.info_audio_none))
+        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_LOCATION)?.let(::parseIso6709)?.let { (lat, lon) ->
+            add(R.string.info_location, formatCoordinates(lat, lon))
+        }
+        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull()
+            ?.takeIf { it != 0 }?.let { add(R.string.info_orientation, "$it°") }
+    } catch (_: Throwable) {
+    } finally {
+        runCatching { retriever.release() }
+    }
+}
+
+/** "H.265 (HEVC)" for "video/hevc"; the type itself when unknown. */
+private fun codecName(mime: String): String = when (mime.lowercase(Locale.US)) {
+    "video/avc" -> "H.264 (AVC)"
+    "video/hevc" -> "H.265 (HEVC)"
+    "video/av01" -> "AV1"
+    "video/x-vnd.on2.vp8" -> "VP8"
+    "video/x-vnd.on2.vp9" -> "VP9"
+    "video/mp4v-es" -> "MPEG-4"
+    "video/3gpp" -> "H.263"
+    "video/dolby-vision" -> "Dolby Vision"
+    "audio/mp4a-latm" -> "AAC"
+    "audio/opus" -> "Opus"
+    "audio/vorbis" -> "Vorbis"
+    "audio/mpeg" -> "MP3"
+    "audio/flac" -> "FLAC"
+    "audio/ac3" -> "AC-3"
+    "audio/eac3" -> "E-AC-3"
+    "audio/3gpp" -> "AMR-NB"
+    "audio/amr-wb" -> "AMR-WB"
+    "audio/raw" -> "PCM"
+    else -> mime.substringAfter('/')
+}
+
+/** "+52.2297+021.0122/" or "+52.2297+021.0122+100.5/" (a video's place) to latitude, longitude. */
+private fun parseIso6709(text: String): Pair<Double, Double>? {
+    val m = Regex("""([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)""").find(text) ?: return null
+    val lat = m.groupValues[1].toDoubleOrNull() ?: return null
+    val lon = m.groupValues[2].toDoubleOrNull() ?: return null
+    return if (lat == 0.0 && lon == 0.0) null else lat to lon
+}
+
+private fun formatCoordinates(lat: Double, lon: Double): String =
+    String.format(Locale.US, "%.6f, %.6f", lat, lon)
+
+/** The app that saved the file (Android 11+), by its name when it can be read. */
+private fun ownerAppOf(context: Context, item: GalleryMedia): String? {
+    if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) return null
+    if (item.uri.scheme != "content" || item.uri.authority != android.provider.MediaStore.AUTHORITY) return null
+    val pkg = runCatching {
+        context.contentResolver.query(item.uri, arrayOf(android.provider.MediaStore.MediaColumns.OWNER_PACKAGE_NAME), null, null, null)
+            ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+    }.getOrNull()?.takeIf { it.isNotBlank() } ?: return null
+    val label = runCatching {
+        val pm = context.packageManager
+        pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+    }.getOrNull()
+    return if (label.isNullOrBlank() || label == pkg) pkg else "$label ($pkg)"
 }
 
 /** Where each trashed file was before it was deleted, by its id; empty when not provided. */

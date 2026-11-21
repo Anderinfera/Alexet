@@ -52,6 +52,7 @@ import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.updateAndGet
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.withLock
@@ -291,7 +292,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
     )
     private var downloaderJob: Job? = null
-    private var downloaderObserved = false
+    private val downloaderObserved = HashSet<android.net.Uri>()
     private val downloaderObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
         override fun onChange(selfChange: Boolean) {
             downloaderSignals.tryEmit(Unit)
@@ -312,6 +313,9 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
     @Volatile private var lastFullCheckAt = 0L
 
     /** A check of every id now and then: a notification can get lost (Alexet frozen in the background). */
+    /** Android 9 and older: when the last full read of MediaStore was published (elapsedRealtime). */
+    @Volatile private var lastLegacyFullSyncAt = 0L
+
     private fun fullCheckDue(): Boolean =
         exactSyncs.get() >= EXACT_SYNCS_PER_FULL_CHECK ||
             android.os.SystemClock.elapsedRealtime() - lastFullCheckAt >= FULL_CHECK_MS
@@ -351,6 +355,15 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         // Expired entries are otherwise only dropped when the same path is looked up again.
         if (ownWrites.size > 256) ownWrites.entries.removeIf { it.value < now }
         ownWrites[DownloadMediaFilter.normalizePath(file.absolutePath)] = now + OWN_WRITE_GRACE_MS
+    }
+
+    /** [markOwnWrite] for many files at once, with one sweep of the expired entries. */
+    private fun markOwnWrites(files: Collection<File>) {
+        if (files.isEmpty()) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        ownWrites.entries.removeIf { it.value < now }
+        val until = now + OWN_WRITE_GRACE_MS
+        files.forEach { ownWrites[DownloadMediaFilter.normalizePath(it.absolutePath)] = until }
     }
 
     /** For other components that write files (trash restore): see [markOwnWrite]. */
@@ -483,25 +496,36 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         unwatchDownloader()
     }
 
-    /** Observing doesn't start the downloader's process. Refused while it isn't installed: tried again on the next start. */
+    /**
+     * Observing doesn't start the downloader's process. Refused while a build isn't installed or
+     * hasn't allowed Alexet yet: tried again on the next start or after the permission is granted.
+     */
     private fun watchDownloader() {
         synchronized(downloaderObserver) {
-            if (downloaderObserved || !watching) return
-            downloaderObserved = runCatching {
-                appContext.contentResolver.registerContentObserver(
-                    dev.ander.alexet.integration.DownloaderProgressClient.missionsUri(),
-                    false,
-                    downloaderObserver,
-                )
-            }.isSuccess
+            if (!watching) return
+            for (uri in dev.ander.alexet.integration.DownloaderProgressClient.missionsUris()) {
+                if (uri in downloaderObserved) continue
+                val registered = runCatching {
+                    appContext.contentResolver.registerContentObserver(uri, false, downloaderObserver)
+                }.isSuccess
+                if (registered) downloaderObserved += uri
+            }
         }
     }
 
     private fun unwatchDownloader() {
         synchronized(downloaderObserver) {
-            if (!downloaderObserved) return
-            downloaderObserved = false
+            if (downloaderObserved.isEmpty()) return
+            downloaderObserved.clear()
             runCatching { appContext.contentResolver.unregisterContentObserver(downloaderObserver) }
+        }
+    }
+
+    /** The user allowed Alexet to read the downloader's progress: follow it without waiting for the next start. */
+    fun onDownloaderPermissionGranted() {
+        ioScope.launch(choresDispatcher) {
+            watchDownloader()
+            downloaderSignals.tryEmit(Unit)
         }
     }
 
@@ -893,7 +917,9 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         val toScan = mediaPaths.filter { path ->
             // A file being downloaded is scanned once it is finished (onDownloadReady), not half
             // written; and on Android 11+ a removed file's row is dropped by Android itself.
-            !downloadTracker.isActive(path) &&
+            // Files Alexet itself just wrote (moves, copies, renames, edits) are scanned by the
+            // operation: scanning them here again cost one more scan per file.
+            !downloadTracker.isActive(path) && !isOwnWrite(path) &&
                 (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || File(path).exists())
         }
         val sent = scanOnce(toScan, toScan.map { DownloadsWatchLogic.mediaMimeOf(it) }) {
@@ -1393,6 +1419,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         // Hidden / other-volume folders written by plain file copies: their trees are rescanned
         // and the hidden-folder cache re-read once at the end, not after every file.
         val treeScanDirs = LinkedHashSet<File>()
+        val copiedFiles = ArrayList<File>()
 
         val result = buildSet {
             for (dest in destinations) {
@@ -1408,12 +1435,17 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                     onProgress(current, total)
                     if (copiedFile != null) {
                         finishOwnWrite(copiedFile)
+                        copiedFiles += copiedFile
                         add(item.id to dest.id)
                         scanPaths += copiedFile.absolutePath
                     }
                 }
             }
         }
+        // The copies are scanned below. The folder watcher handles its events once they stop (after
+        // the whole copy), when each copy's own mark (10 s from its copy) had run out for all but
+        // the last ones: it scanned nearly every copy a second time. Marked again from the end.
+        markOwnWrites(copiedFiles)
         if (treeScanDirs.isNotEmpty()) {
             treeScanDirs.forEach { nomediaScanner.rescanTree(it) }
             invalidateNomediaCache()
@@ -1660,15 +1692,36 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         val nowMs = System.currentTimeMillis()
         val needWrite = ArrayList<GalleryMedia>()
         val stampedByPath = HashMap<String, Long>(targetsInOrder.size)
+        val stamps = ArrayList<Pair<File, Long>>(targetsInOrder.size)
         targetsInOrder.forEachIndexed { index, file ->
             val stampMs = nowMs - index * 1_000L
-            val stampSec = stampMs / 1000L
             runCatching { file.setLastModified(stampMs) }
             stampedByPath[file.absolutePath.lowercase()] = stampMs
-            val uri = findMediaStoreUriForFile(file)
-            if (uri != null) {
+            stamps += file to stampMs
+        }
+        // The rows of all files found with a few queries, and their dates written in batches: one
+        // lookup (up to 6 queries) and one update per file took seconds for a thousand files.
+        val uris = findMediaStoreUrisForFiles(targetsInOrder)
+        val rows = stamps.mapNotNull { (file, stampMs) -> uris[file.absolutePath]?.let { Triple(file, it, stampMs) } }
+        for (chunk in rows.chunked(DATE_UPDATE_BATCH)) {
+            val ops = ArrayList<android.content.ContentProviderOperation>(chunk.size)
+            chunk.forEach { (_, uri, stampMs) ->
+                ops += android.content.ContentProviderOperation.newUpdate(uri)
+                    .withValue(MediaStore.MediaColumns.DATE_MODIFIED, stampMs / 1000L)
+                    .build()
+            }
+            val batched = try {
+                resolver.applyBatch(MediaStore.AUTHORITY, ops)
+                true
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                false
+            }
+            if (batched) continue
+            // One of them refused (a file of another app): each on its own, as before.
+            chunk.forEach { (file, uri, stampMs) ->
                 val values = ContentValues().apply {
-                    put(MediaStore.MediaColumns.DATE_MODIFIED, stampSec)
+                    put(MediaStore.MediaColumns.DATE_MODIFIED, stampMs / 1000L)
                 }
                 try {
                     resolver.update(uri, values, null, null)
@@ -1707,6 +1760,69 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
             }
         }
         needWrite
+    }
+
+    /**
+     * The MediaStore rows of [files] by absolute path, looked up as [findMediaStoreUriForFile] does
+     * (images, then video, then the file table of each volume) but many paths per query.
+     */
+    private fun findMediaStoreUrisForFiles(files: List<File>): Map<String, Uri> {
+        val out = HashMap<String, Uri>(files.size * 2)
+        val paths = files.map { it.absolutePath }
+        for (collection in mediaStoreLookupCollections()) {
+            val left = paths.filter { it !in out }
+            if (left.isEmpty()) break
+            for (chunk in left.chunked(PATH_QUERY_CHUNK)) {
+                runCatching {
+                    @Suppress("DEPRECATION")
+                    resolver.query(
+                        collection,
+                        arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DATA),
+                        "${MediaStore.MediaColumns.DATA} IN (${chunk.joinToString(",") { "?" }})",
+                        chunk.toTypedArray(),
+                        null,
+                    )?.use { rows ->
+                        while (rows.moveToNext()) {
+                            val path = rows.getString(1) ?: continue
+                            if (path !in out) out[path] = android.content.ContentUris.withAppendedId(collection, rows.getLong(0))
+                        }
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    /**
+     * Android 11+: the paths of moved files (new path to old path) that MediaStore does not show
+     * right yet, for the scanner. The storage layer moves a file's row with the file, so normally
+     * none; a new path without a row, or an old path still with one, is scanned as before.
+     */
+    private fun scansStillNeeded(moved: List<Pair<String, String?>>): List<String> {
+        val lookup = moved.flatMap { (target, src) -> listOfNotNull(target, src) }.distinct().map(::File)
+        val listed = findMediaStoreUrisForFiles(lookup).keys.mapTo(HashSet()) { it.lowercase() }
+        val out = ArrayList<String>()
+        for ((target, src) in moved) {
+            if (target.lowercase() !in listed) out += target
+            if (src != null && !src.equals(target, ignoreCase = true) && src.lowercase() in listed) out += src
+        }
+        if (out.isNotEmpty()) AppLog.event("Sync") { "move: ${out.size} path(s) of ${moved.size} moved file(s) left for the scanner" }
+        return out
+    }
+
+    private fun mediaStoreLookupCollections(): List<Uri> = buildList {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.getExternalVolumeNames(appContext).forEach { volume ->
+                add(MediaStore.Images.Media.getContentUri(volume))
+                add(MediaStore.Video.Media.getContentUri(volume))
+                add(MediaStore.Files.getContentUri(volume))
+            }
+        } else {
+            add(MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+            add(MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
+            @Suppress("DEPRECATION")
+            add(MediaStore.Files.getContentUri("external"))
+        }
     }
 
     private fun findMediaStoreUriForFile(file: File): Uri? {
@@ -1810,17 +1926,28 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         // Scanned once at the end: one scanner connection per file (thousands when deleting whole
         // folders) flooded MediaProvider.
         val toScan = ArrayList<String>()
+        // Android 11+: deleting the file by its path removes its MediaStore row too, so the row's own
+        // delete (one call per file, deleting nothing) and the scan of the gone path were wasted.
+        // Rows left anyway go in one call per volume at the end.
+        val byPath = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+        val leftRows = HashMap<String, MutableList<Pair<Long, String>>>()
         items.forEach { item ->
             if (downloadTracker.isActive(item.absolutePath)) return@forEach
-            val resolvedFile = fileForMedia(item)
-            val path = item.absolutePath ?: resolvedFile?.absolutePath
+            val path = item.absolutePath ?: fileForMedia(item)?.absolutePath
             val ok = if (path != null) {
                 val file = File(path)
-                val isFileDeleted = !file.exists() || runCatching { file.delete() }.getOrDefault(false)
+                val existed = file.exists()
+                val isFileDeleted = !existed || runCatching { file.delete() }.getOrDefault(false)
                 // Only a hidden-folder file changes the hidden-folder scan.
                 if (isFileDeleted && (item.isHidden || item.uri.scheme == "file")) {
                     deletedNomedia = true
                 }
+                val volume = item.uri.takeIf { it.authority == MediaStore.AUTHORITY }?.pathSegments?.firstOrNull()
+                val rowId = runCatching { android.content.ContentUris.parseId(item.uri) }.getOrDefault(-1L)
+                if (byPath && existed && isFileDeleted && volume != null && rowId > 0L) {
+                    leftRows.getOrPut(volume) { ArrayList() } += rowId to path
+                    true
+                } else {
                 var isProviderDeleted = false
                 var providerFailed = false
                 if (item.uri.toString().startsWith("content://media/") || item.uri.scheme == "content") {
@@ -1841,6 +1968,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                     false
                 } else {
                     isProviderDeleted || isFileDeleted
+                }
                 }
             } else {
                 try {
@@ -1863,6 +1991,19 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                 // At once, not after the whole batch: a sync during the loop must already mask
                 // this file (it flickered back on the list until the end).
                 pendingDeletesVersion.incrementAndGet()
+            }
+        }
+        for ((volume, rows) in leftRows) {
+            for (chunk in rows.chunked(DELETE_ROWS_CHUNK)) {
+                val removed = runCatching {
+                    resolver.delete(
+                        MediaStore.Files.getContentUri(volume),
+                        "${MediaStore.MediaColumns._ID} IN (${chunk.joinToString(",") { it.first.toString() }})",
+                        null,
+                    )
+                }
+                // Not removable this way: the scanner drops the rows of the gone files, as before.
+                if (removed.isFailure) chunk.mapTo(toScan) { it.second }
             }
         }
         if (toScan.isNotEmpty()) {
@@ -2769,6 +2910,16 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         val destIsHidden = dest.isHidden || File(destDir, ".nomedia").exists()
         val destRawBucketId = mediaStoreBucketIdOf(destDir)
 
+        // Android 11+: a move goes through the storage layer, which moves the file's MediaStore row
+        // itself (same id, new path and name) and rescans a file written there (EXIF stripped, a
+        // copy to another storage) once it is closed. Scanning the old and the new path of every
+        // file again kept the scanner busy for minutes after a big move (about 3 min for 2000
+        // files). Such moves are only checked at the end (see scansStillNeeded); hidden folders,
+        // plain files and Android 10 and older are scanned as before.
+        val rowsFollowMoves = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !destIsHidden
+        val checkedMoves = ArrayList<Pair<String, String?>>()
+        val srcDirHidden = HashMap<File, Boolean>()
+
         // Moved files leave the source folder a row at a time (uiBatchSize = its columns): the
         // tiles behind them then move up by whole rows instead of re-flowing after every file.
         // A batch that is not full is shown after BATCH_MAX_WAIT_MS anyway (large files).
@@ -2811,12 +2962,21 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                     if (destIsHidden) {
                         touchedNomedia = true
                     }
-                    scanPaths += targetFile.absolutePath
-                    if (srcFile != null && srcFile.absolutePath != targetFile.absolutePath) {
-                        scanPaths += srcFile.absolutePath
-                        srcFile.parentFile?.let { srcDirsToRescan += it }
+                    val srcDir = srcFile?.parentFile
+                    val fromHidden = item.isHidden ||
+                        (srcDir != null && srcDirHidden.getOrPut(srcDir) { File(srcDir, ".nomedia").exists() })
+                    if (rowsFollowMoves && !fromHidden && item.uri.scheme == "content") {
+                        checkedMoves += targetFile.absolutePath to (srcFile?.absolutePath ?: item.absolutePath)
+                    } else {
+                        scanPaths += targetFile.absolutePath
+                        if (srcFile != null && srcFile.absolutePath != targetFile.absolutePath) {
+                            scanPaths += srcFile.absolutePath
+                        }
+                        item.absolutePath?.let { scanPaths += it }
                     }
-                    item.absolutePath?.let { scanPaths += it }
+                    if (srcFile != null && srcFile.absolutePath != targetFile.absolutePath) {
+                        srcDir?.let { srcDirsToRescan += it }
+                    }
 
                     val newAbsPath = targetFile.absolutePath
                     pendingMoves[item.id] = PendingMove(
@@ -2848,6 +3008,10 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                 // Also when stopped part-way: the files already moved are shown where they are.
                 batchTimer.cancel()
                 synchronized(batchLock) { publishBatch() }
+                // The folder watcher handles its events only once they stop (after the whole move),
+                // when each file's own mark (10 s from its move) had run out for all but the last
+                // ones: it scanned nearly every moved file again. Marked again from the end.
+                markOwnWrites(movedUpdates.values.map { File(it.second) })
             }
 
             if (stampSelectionOrderMtimes && orderedMovedTargets.isNotEmpty()) {
@@ -2859,6 +3023,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
 
         ioScope.launch {
             nomediaCache = null
+            if (checkedMoves.isNotEmpty()) scanPaths += scansStillNeeded(checkedMoves)
             if (scanPaths.isNotEmpty()) {
                 val pathsArray = scanPaths.distinct().toTypedArray()
                 val remaining = java.util.concurrent.atomic.AtomicInteger(pathsArray.size)
@@ -3548,6 +3713,13 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         }
 
     private fun currentGenerations(volumes: Set<String>): Map<String, Long>? {
+        // Android 9 and older have no generations: the time (ms) stands in for one. A delta then
+        // reads the rows added or modified since (see [queryChangedRows]); every change used to read
+        // the whole library (31,000 rows, 1-3 s on an older phone).
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            val now = System.currentTimeMillis()
+            return volumes.associateWith { now }
+        }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         val out = HashMap<String, Long>(volumes.size)
         for (volume in volumes) {
@@ -3671,6 +3843,8 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         publish: () -> Boolean = { true },
         deletedById: Set<Long>? = null,
         onUpserts: (Set<Long>) -> Unit = {},
+        /** The notifications named only deletions (with [deletedById]): no row can be new or changed. */
+        deletesOnly: Boolean = false,
     ): Boolean = withContext(queryDispatcher) {
         queryMutex.withLock {
             val syncStartedAt = android.os.SystemClock.elapsedRealtime()
@@ -3692,8 +3866,17 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
             // delta sees no changed rows for a card that comes back, so they'd stay missing).
             val storedVolumes = runCatching { mediaIndex.volumeSet() }.getOrNull()
             val volumesChanged = storedVolumes != null && storedVolumes != volumes
+            // Android 9 and older (time-based deltas): still a full read now and then, for the
+            // changes a delta cannot see there.
+            val legacyFullDue = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && (
+                // The first sync of a run is a full one (changes made while the app was closed).
+                lastLegacyFullSyncAt == 0L ||
+                    android.os.SystemClock.elapsedRealtime() - lastLegacyFullSyncAt >= LEGACY_FULL_SYNC_MS ||
+                    // The clock was set back: a time-based delta would miss what came meanwhile.
+                    generations.orEmpty().any { (volume, now) -> now < (storedGenerations[volume] ?: 0L) }
+                )
             val needFull = full || !indexReady || generations == null || persistedIsEmpty() ||
-                storedGenerations.values.any { it <= 0L } || volumesChanged
+                storedGenerations.values.any { it <= 0L } || volumesChanged || legacyFullDue
             val pause: suspend () -> Unit = if (background) {
                 { delay(LAZY_CHUNK_PAUSE_MS) }
             } else {
@@ -3702,6 +3885,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
             if (needFull) {
                 return@withLock fullSync(generations.orEmpty(), background, pause, publish).also { published ->
                     if (published) runCatching { mediaIndex.putVolumeSet(volumes) }
+                    if (published) lastLegacyFullSyncAt = android.os.SystemClock.elapsedRealtime()
                     if (volumesChanged) AppLog.event("Sync") { "volumes changed: $storedVolumes -> $volumes" }
                     AppLog.event("Sync") {
                         "full sync (background=$background) in ${android.os.SystemClock.elapsedRealtime() - syncStartedAt} ms"
@@ -3710,19 +3894,49 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
             }
             if (storedVolumes == null) runCatching { mediaIndex.putVolumeSet(volumes) }
             val changedVolumes = volumes.filter { (generations[it] ?: 0L) > (storedGenerations[it] ?: 0L) }
+            // Only deletions told, each by its id: the changed rows are not read (3 queries of
+            // 20-35 ms that found nothing). The stored generations then stay where they were, so a
+            // row added meanwhile (its notification not here yet) is still read by the next delta.
+            val skipChanged = deletesOnly && deletedById != null
+            val writtenGenerations = if (skipChanged) storedGenerations else generations
             val queryStartedAt = android.os.SystemClock.elapsedRealtime()
-            val upserts = if (changedVolumes.isEmpty()) {
+            // Android 9 and older: every row's id and path in one read (for the deletions, as the
+            // ids alone were). A row whose path changed while keeping its id and dates (another app
+            // renamed or moved it through MediaStore) is read again with the changed ones, or the
+            // library would keep the old path until the next full read.
+            val legacyLive = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && changedVolumes.isNotEmpty() && deletedById == null) {
+                lowPriority(background) { queryLegacyLivePaths() }
+            } else {
+                null
+            }
+            val upserts = if (changedVolumes.isEmpty() || skipChanged) {
                 emptyList()
             } else {
                 lowPriority(background) {
-                    MediaIndexLogic.dedupeById(queryChangedRows(changedVolumes, storedGenerations))
+                    val changed = queryChangedRows(changedVolumes, storedGenerations)
+                    val moved = if (legacyLive == null) emptyList() else {
+                        val read = changed.mapTo(HashSet()) { it.id }
+                        val movedIds = _currentMedia.value.mapNotNull { row ->
+                            if (!MediaIndexLogic.isMediaStoreRow(row) || row.id in read) return@mapNotNull null
+                            val path = legacyLive[row.id] ?: return@mapNotNull null
+                            row.id.takeIf { row.absolutePath == null || !path.equals(row.absolutePath, ignoreCase = true) }
+                        }
+                        queryLegacyRowsById(movedIds)
+                    }
+                    MediaIndexLogic.dedupeById(changed + moved)
                 }
             }
             val changedQueriedAt = android.os.SystemClock.elapsedRealtime()
             onUpserts(upserts.mapTo(HashSet()) { it.id })
             val base = _currentMedia.value
             // Deletes bump the volume generation too, so an unchanged generation means no deletes.
-            val liveIds = if (changedVolumes.isEmpty() || deletedById != null) null else lowPriority(background) { queryLiveIds(volumes) }
+            val liveIds = if (changedVolumes.isEmpty() || deletedById != null) {
+                null
+            } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                legacyLive?.keys?.let { HashSet(it) }
+            } else {
+                lowPriority(background) { queryLiveIds(volumes) }
+            }
             val idsQueriedAt = android.os.SystemClock.elapsedRealtime()
             val deleted = if (deletedById != null) {
                 if (deletedById.isEmpty()) emptyList() else base.filter { MediaIndexLogic.isMediaStoreRow(it) && it.id in deletedById }.map { it.id }
@@ -3743,7 +3957,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
             if (!publish()) return@withLock false
             val nothingChanged = upserts.isEmpty() && deleted.isEmpty()
             if (nothingChanged && pendingMoves.isEmpty() && pendingDeletes.isEmpty()) {
-                if (changedVolumes.isNotEmpty()) {
+                if (changedVolumes.isNotEmpty() && !skipChanged) {
                     indexMutex.withLock {
                         mediaIndex.applyDelta(emptyList(), emptyList(), generations)
                     }
@@ -3757,7 +3971,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
             if (!applyQueryResult(fresh, publish)) return@withLock false
             val indexStartedAt = android.os.SystemClock.elapsedRealtime()
             indexMutex.withLock {
-                indexWrite { mediaIndex.applyDelta(upserts, deleted, generations, pauseBetweenChunks = pause) }
+                indexWrite { mediaIndex.applyDelta(upserts, deleted, writtenGenerations, pauseBetweenChunks = pause) }
                 deleted.forEach { persisted.remove(it) }
                 upserts.forEach { persisted[it.id] = it }
             }
@@ -3866,6 +4080,27 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
     }
 
     private fun queryChangedRows(volumes: List<String>, sinceGeneration: Map<String, Long>): List<GalleryMedia> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            // Rows added (DATE_ADDED: set when MediaStore inserts them) or whose file changed
+            // (DATE_MODIFIED) since the last sync, with a margin for the seconds both are kept in.
+            // Other changes (another app editing a row's path) come with the regular full read.
+            val sinceMs = sinceGeneration.values.minOrNull() ?: 0L
+            val since = (sinceMs / 1000L - LEGACY_DELTA_SLACK_SEC).coerceAtLeast(0L).toString()
+            val selection = "(${MediaStore.MediaColumns.DATE_ADDED} >= ? OR ${MediaStore.MediaColumns.DATE_MODIFIED} >= ?)"
+            return queryCollection(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                isVideo = false,
+                selection = selection,
+                selectionArgs = arrayOf(since, since),
+                strict = true,
+            ) + queryCollection(
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                isVideo = true,
+                selection = selection,
+                selectionArgs = arrayOf(since, since),
+                strict = true,
+            )
+        }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return emptyList()
         val genCol = MediaStore.MediaColumns.GENERATION_MODIFIED
         val rows = ArrayList<GalleryMedia>()
@@ -3892,6 +4127,34 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                 selectionArgs = arrayOf(since),
                 strict = true,
             )
+        }
+        return rows
+    }
+
+    /** Android 9 and older: path of every photo and video row by id; null when a query failed. */
+    private fun queryLegacyLivePaths(): HashMap<Long, String>? {
+        val out = HashMap<Long, String>(maxOf(_currentMedia.value.size * 2, 16))
+        @Suppress("DEPRECATION")
+        val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DATA)
+        for (uri in listOf(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)) {
+            val ok = runCatching {
+                resolver.query(uri, projection, null, null, null)?.use { c ->
+                    while (c.moveToNext()) out[c.getLong(0)] = c.getString(1).orEmpty()
+                }
+            }.isSuccess
+            if (!ok) return null
+        }
+        return out
+    }
+
+    /** Android 9 and older: the photo and video rows of [ids], read as a full read reads them. */
+    private fun queryLegacyRowsById(ids: List<Long>): List<GalleryMedia> {
+        if (ids.isEmpty()) return emptyList()
+        val rows = ArrayList<GalleryMedia>()
+        for (chunk in ids.chunked(PATH_QUERY_CHUNK)) {
+            val selection = "${MediaStore.MediaColumns._ID} IN (${chunk.joinToString(",")})"
+            rows += queryCollection(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, isVideo = false, selection = selection, strict = true)
+            rows += queryCollection(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, isVideo = true, selection = selection, strict = true)
         }
         return rows
     }
@@ -4117,7 +4380,20 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
     private fun matchesPendingDelete(item: GalleryMedia): Boolean {
         if (pendingDeletes.containsKey(item.id)) return true
         if (pendingDeletes.isEmpty()) return false
-        return pendingDeleteIndex().matches(item.absolutePath?.lowercase(), item.displayName.lowercase(), item.bucketId)
+        return pendingDeleteIndex().matches(item.absolutePath?.lowercase(), item.displayName.lowercase(), item.bucketId) &&
+            !isNewFileAtFreedPath(item)
+    }
+
+    /**
+     * A row with another id than the one a delete or move masks, at the masked path or name, whose
+     * file is on disk: a new file where an operation freed the place (the same picture downloaded
+     * again after it was moved or deleted), not that operation's leftover row (whose file is gone).
+     * Masked, it stayed hidden for up to 5 minutes, and a sync in that time stored the library
+     * without it for good.
+     */
+    private fun isNewFileAtFreedPath(item: GalleryMedia): Boolean {
+        val path = item.absolutePath ?: return false
+        return runCatching { File(path).exists() }.getOrDefault(false)
     }
 
     private fun pendingDeleteIndex(): PendingDeleteIndex {
@@ -4144,7 +4420,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         if (matchesPendingDelete(item)) return true
         if (pendingMoves.isEmpty()) return false
         if (pendingMoves.containsKey(item.id)) return true
-        return srcRowKeys(item).any { it in moveKeys }
+        return srcRowKeys(item).any { it in moveKeys } && !isNewFileAtFreedPath(item)
     }
 
     /** Keys of every pending move's source orphan, for [isMaskedByPendingOps]. */
@@ -4262,7 +4538,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
             if (anySrcOrphans) {
                 val itemSrcKey = "${item.bucketId}:${item.displayName.lowercase()}"
                 val itemPath = item.absolutePath?.lowercase()
-                if (itemSrcKey in srcOrphans || (itemPath != null && itemPath in srcOrphanPaths)) {
+                if ((itemSrcKey in srcOrphans || (itemPath != null && itemPath in srcOrphanPaths)) && !isNewFileAtFreedPath(item)) {
                     continue
                 }
             }
@@ -5047,27 +5323,49 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         // Cache hydration runs off the main thread: the repository is built inside the first
         // composition, so reading the index here would freeze the system splash and skip the loader.
         ioScope.launch {
+            // The cached folders and library are read from disk while MediaStore's identity is
+            // checked (its first calls can be slow on a cold start); they are used only after the
+            // check passed. Before, the reading waited for the check.
+            val cachedAlbumsRead = async { runCatching { AlbumCache.load(appContext) }.getOrNull() }
+            val indexRead = if (_currentMedia.value.isEmpty()) {
+                // Kept as a result: a failure counts only if the rows are used (as when read after the check).
+                async {
+                    runCatching {
+                        val loadStarted = android.os.SystemClock.elapsedRealtime()
+                        var mimeCorrected = false
+                        val rows = mediaIndex.loadAll(onMimeCorrected = { mimeCorrected = true })
+                        AppLog.event("Startup") { "index loadAll: ${rows.size} rows in ${android.os.SystemClock.elapsedRealtime() - loadStarted} ms" }
+                        rows to mimeCorrected
+                    }
+                }
+            } else {
+                null
+            }
             // Before anything cached is shown: an index from another MediaStore database maps ids
             // to the wrong files (wrong thumbnails, files in the wrong folders).
-            try {
+            val storeReplaced = try {
                 discardIndexIfStoreReplaced()
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 AppLog.e("GalleryRepository", "MediaStore identity check failed", e)
+                false
             }
-            runCatching {
-                val cachedAlbums = AlbumCache.load(appContext)
+            if (!storeReplaced) {
+                val cachedAlbums = cachedAlbumsRead.await()
                 if (!cachedAlbums.isNullOrEmpty() && _seedAlbums.value.isEmpty()) {
                     _seedAlbums.value = cachedAlbums
                 }
             }
             // Legacy one-shot snapshot; superseded by the incremental index.
             runCatching { File(appContext.filesDir, "media_snapshot.json").delete() }
-            if (_currentMedia.value.isEmpty()) {
-                val loadStarted = android.os.SystemClock.elapsedRealtime()
-                var mimeCorrected = false
-                val indexed = mediaIndex.loadAll(onMimeCorrected = { mimeCorrected = true })
-                AppLog.event("Startup") { "index loadAll: ${indexed.size} rows in ${android.os.SystemClock.elapsedRealtime() - loadStarted} ms" }
+            if (indexRead != null && _currentMedia.value.isEmpty()) {
+                // A replaced store emptied the index: what was read meanwhile belongs to the old one.
+                val (indexed, mimeCorrected) = if (storeReplaced) {
+                    indexRead.cancel()
+                    emptyList<GalleryMedia>() to false
+                } else {
+                    indexRead.await().getOrThrow()
+                }
                 indexMutex.withLock {
                     persisted = HashMap<Long, GalleryMedia>(indexed.size * 2).also { map ->
                         indexed.forEach { map[it.id] = it }
@@ -5083,6 +5381,8 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                         _seedAlbums.value = albumsFrom(indexed)
                     }
                 }
+            } else {
+                indexRead?.cancel()
             }
 
             _isScanning.value = true
@@ -5213,6 +5513,10 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                         publish = { epoch == mutationEpoch.get() },
                         deletedById = if (exact) changes.deletedListedIds else null,
                         onUpserts = { read = it },
+                        // Only when deletions were told and nothing else: a sync with no change
+                        // named (coming back to the app, a folder's quick scan) skipped the new
+                        // rows too, and a just downloaded file waited for the next change.
+                        deletesOnly = exact && !explicit && changes.addedListedIds.isEmpty() && changes.deletedListedIds.isNotEmpty(),
                     )
                     if (exact) {
                         exactSyncs.incrementAndGet()
@@ -5221,11 +5525,15 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                         lastFullCheckAt = android.os.SystemClock.elapsedRealtime()
                     }
                     if (published) {
-                        // Downloads in progress are pending rows: they can only have come with a new or changed row.
-                        if (!exact || changes.addedListedIds.isNotEmpty()) syncPendingDownloads()
                         // Rows named by a notification but not read: still pending (a file another
                         // app wrote by path, not scanned yet). Checked now, by id.
                         val waiting = changes.addedListedIds - read
+                        // Downloads in progress are pending rows: they can only have come with a new or
+                        // changed row the delta could not read (pending), and a tracked one may have
+                        // finished. Every new photo ran these 3 queries (30-40 ms) before.
+                        if (!exact || (changes.addedListedIds.isNotEmpty() && (waiting.isNotEmpty() || downloadTracker.hasMediaStorePending()))) {
+                            syncPendingDownloads()
+                        }
                         if (waiting.isNotEmpty()) publishWaitingIds(waiting)
                     } else {
                         // A move/delete patched the UI mid-query; this snapshot predates its masks.
@@ -5247,6 +5555,12 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
     }
 
     companion object {
+        /** Ids per call when removing the MediaStore rows left after deleting files by path. */
+        private const val DELETE_ROWS_CHUNK = 500
+        /** Paths per query when looking rows up (SQLite allows 999 arguments). */
+        private const val PATH_QUERY_CHUNK = 400
+        /** Date updates sent to MediaStore in one batch. */
+        private const val DATE_UPDATE_BATCH = 200
         /** See [takeRecoverableSender]. */
         private const val RECOVERABLE_TTL_MS = 5_000L
         /** Other files are listed again this long after the last operation or disk change. */
@@ -5272,6 +5586,10 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         private const val QUICK_SCAN_FOLDER_THROTTLE_MS = 10_000L
         /** Syncs on exact changes between two that read every id (see fullCheckDue). */
         private const val EXACT_SYNCS_PER_FULL_CHECK = 20
+        /** Android 9 and older: seconds read again before the last sync (DATE_ADDED / DATE_MODIFIED are whole seconds). */
+        private const val LEGACY_DELTA_SLACK_SEC = 60L
+        /** Android 9 and older: a full read of MediaStore at least this often. */
+        private const val LEGACY_FULL_SYNC_MS = 10 * 60_000L
         private const val FULL_CHECK_MS = 10 * 60_000L
         private const val FULL_SCAN_MAX_DEPTH = 16
         private const val FULL_SCAN_BATCH = 200
@@ -5728,9 +6046,10 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
         val root = DocumentFile.fromTreeUri(appContext, treeUri) ?: return@withContext emptySet()
         val total = items.size
         var current = 0
-        // The folder is listed once: findFile lists all of it on every call, and was called at
-        // least once per copied file.
-        val takenNames = root.listFiles().mapNotNullTo(HashSet()) { it.name?.lowercase() }
+        // The folder's names in one query: DocumentFile.listFiles() asked the provider once more for
+        // each file's name (thousands of calls in a big folder before the first copy).
+        val takenNames = childDocumentNames(treeUri)
+            ?: root.listFiles().mapNotNullTo(HashSet()) { it.name?.lowercase() }
         buildSet {
             items.forEach { item ->
                 if (downloadTracker.isActive(item.absolutePath)) {
@@ -5740,12 +6059,15 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                 }
                 val mime = item.mimeType.ifBlank { "application/octet-stream" }
                 val name = uniqueDocumentName(takenNames, sanitizeFileName(item.displayName.ifBlank { "file" }))
-                val dest = root.createFile(mime, name)
-                if (dest != null) {
-                    // The provider may still have picked another name.
-                    takenNames += (dest.name ?: name).lowercase()
+                val destUri = runCatching { DocumentsContract.createDocument(resolver, root.uri, mime, name) }.getOrNull()
+                if (destUri != null) {
+                    // The provider may still have picked another name: storage documents carry it in
+                    // their id (no extra query); otherwise the name asked for.
+                    val docId = runCatching { DocumentsContract.getDocumentId(destUri) }.getOrNull()
+                    val given = docId?.takeIf { ':' in it && '/' in it }?.substringAfterLast('/')
+                    takenNames += (given ?: name).lowercase()
                     val ok = runCatching {
-                        resolver.openOutputStream(dest.uri, "w")?.use { out ->
+                        resolver.openOutputStream(destUri, "w")?.use { out ->
                             resolver.openInputStream(item.uri)?.use { input -> input.copyTo(out, COPY_BUFFER_BYTES) }
                         }
                     }.getOrNull() != null
@@ -5753,7 +6075,7 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
                         add(item.id)
                     } else {
                         // No empty or cut-off file left in the target folder.
-                        runCatching { dest.delete() }
+                        runCatching { DocumentsContract.deleteDocument(resolver, destUri) }
                     }
                 }
                 current++
@@ -5761,6 +6083,16 @@ class GalleryRepository(context: Context, private val settings: SettingsStore) {
             }
         }
     }
+
+    /** Lowercase names in the folder [treeUri] points at, read in one query; null when the provider can't list it. */
+    private fun childDocumentNames(treeUri: Uri): HashSet<String>? = runCatching {
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri))
+        resolver.query(children, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { rows ->
+            HashSet<String>(rows.count * 2).apply {
+                while (rows.moveToNext()) rows.getString(0)?.let { add(it.lowercase()) }
+            }
+        }
+    }.getOrNull()
 
     private fun uniqueDocumentName(taken: Set<String>, name: String): String {
         if (name.lowercase() !in taken) return name

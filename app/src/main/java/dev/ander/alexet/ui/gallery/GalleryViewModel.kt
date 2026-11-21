@@ -98,6 +98,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import coil3.SingletonImageLoader
+import kotlin.math.roundToInt
 
 @Immutable
 enum class DragKind { NONE, FOLDER, FILES }
@@ -156,7 +157,6 @@ data class GalleryUiState(
     val isSavingEdit: Boolean = false,
     val editingVideoList: List<GalleryMedia>? = null,
     val isExportingVideo: Boolean = false,
-    val exportVideoProgress: Int = 0,
     val isRefreshing: Boolean = false,
     val cachedViewerMedia: GalleryMedia? = null,
     val loadingFolderIds: Set<Long> = emptySet(),
@@ -164,7 +164,6 @@ data class GalleryUiState(
     /** Folders with a download in progress (their tiles show a badge). */
     val downloadingAlbumIds: Set<Long> = emptySet(),
     /** Whole folders being deleted in the background: their tiles show the progress. */
-    val deletingFolders: Map<Long, FolderDeleteProgress> = emptyMap(),
     /** Smart search: ids of the photos matching [query], best first. */
     val smartResultIds: List<Long> = emptyList(),
     val smartSearch: SmartSearch.Status = SmartSearch.Status(),
@@ -338,21 +337,67 @@ data class GalleryUiState(
         }
 
     private fun computeSelectedFilesFrom(allAvailable: List<GalleryMedia>): List<GalleryMedia> {
+            // Everything selectable by id, and the open list's positions, kept while those lists
+            // stay: each tap filtered the whole library (31,000 files) twice before.
+            val byId = UiStateMemo.get("selectableById", allAvailable, trashedItems) {
+                HashMap<Long, GalleryMedia>((allAvailable.size + trashedItems.size) * 2).also { map ->
+                    allAvailable.forEach { map.putIfAbsent(it.id, it) }
+                    trashedItems.forEach { map.putIfAbsent(it.id, it.toGalleryMedia()) }
+                }
+            }
             if (settings.operationsFollowSelectionOrder && selectedFileIdsOrdered.isNotEmpty()) {
-                val byId = HashMap<Long, GalleryMedia>(allAvailable.size + trashedItems.size)
-                allAvailable.forEach { byId[it.id] = it }
-                trashedItems.forEach { byId.putIfAbsent(it.id, it.toGalleryMedia()) }
                 return selectedFileIdsOrdered.mapNotNull { byId[it] }
             }
             val activeList = if (phoneFolderId != AlbumIds.NONE) (folderMedia[phoneFolderId] ?: media) else media
-            val selectedInActive = activeList.filter { it.id in selectedFileIds }
-            val selectedInActiveIds = selectedInActive.map { it.id }.toSet()
-            val remaining = (allAvailable.filter { it.id in selectedFileIds && it.id !in selectedInActiveIds } +
-                trashedItems.filter { it.id in selectedFileIds && it.id !in selectedInActiveIds }.map { it.toGalleryMedia() })
+            val positions = UiStateMemo.get("selectionPositions", activeList) {
+                HashMap<Long, Int>(activeList.size * 2).also { map ->
+                    activeList.forEachIndexed { i, item -> map.putIfAbsent(item.id, i) }
+                }
+            }
+            // The open list's files first, in its order; the others by the active sort.
+            val inActive = ArrayList<Int>()
+            val remaining = ArrayList<GalleryMedia>()
+            for (id in selectedFileIds) {
+                val at = positions[id]
+                if (at != null) inActive += at else byId[id]?.let { remaining += it }
+            }
+            inActive.sort()
+            val selectedInActive = inActive.map { activeList[it] }
             val activeSort = settings.folderSorts[phoneFolderId] ?: settings.sort
             val sortedRemaining = sortMedia(remaining, activeSort)
             return (selectedInActive + sortedRemaining).distinctBy { it.id }
         }
+
+    /** What the selection holds, counted once per selection for the top bar (it read the list 6 times per update). */
+    val selectionSummary: SelectionSummary by lazy {
+        val files = selectedFiles
+        UiStateMemo.get("selectionSummary", files, settings.hiddenMediaIds, settings.favoriteMediaIds) {
+            var videos = 0
+            var others = 0
+            var otherFile = false
+            var bucket: Long? = null
+            var oneBucket = true
+            var allFavorites = files.isNotEmpty()
+            var anyHidden = false
+            for (f in files) {
+                if (f.isVideo) videos++ else others++
+                if (f.isOtherFile) otherFile = true
+                if (oneBucket) {
+                    if (bucket == null) bucket = f.bucketId else if (bucket != f.bucketId) oneBucket = false
+                }
+                if (allFavorites && f.id !in settings.favoriteMediaIds) allFavorites = false
+                if (!anyHidden && (f.isHidden || f.id in settings.hiddenMediaIds)) anyHidden = true
+            }
+            SelectionSummary(
+                videos = videos,
+                nonVideos = others,
+                hasOtherFile = otherFile,
+                singleBucketId = if (oneBucket) bucket else null,
+                allFavorites = allFavorites,
+                anyHidden = anyHidden,
+            )
+        }
+    }
 
     val selectedAlbums: List<Album> by lazy { computeSelectedAlbums() }
     private fun computeSelectedAlbums(): List<Album> = albums.filter { it.id in selectedAlbumIds }
@@ -381,8 +426,15 @@ data class GalleryUiState(
     val contentOrderFiles: List<GalleryMedia> by lazy { computeContentOrderFiles() }
     private fun computeContentOrderFiles(): List<GalleryMedia> {
             if (!contentOrderMode) return emptyList()
-            val byId = media.associateBy { it.id }
-            return contentOrderDraftIds.mapNotNull { byId[it] }
+            // The folder's own files, looked up once per folder list: a map of the whole library
+            // (31,000 files) was built on every swap while dragging, up to 30 times a second.
+            val folderFiles = filesIn(contentOrderFolderId)
+            val byId = UiStateMemo.get("contentOrderById", folderFiles) { folderFiles.associateBy { it.id } }
+            val found = contentOrderDraftIds.mapNotNull { byId[it] }
+            if (found.size == contentOrderDraftIds.size) return found
+            // Files the folder list doesn't hold (the order was started from the library's rows).
+            val all = UiStateMemo.get("contentOrderLibraryById", media) { media.associateBy { it.id } }
+            return contentOrderDraftIds.mapNotNull { byId[it] ?: all[it] }
         }
 
     val sortTargetAlbumId: Long
@@ -676,14 +728,12 @@ private data class SyncState(
     val isSavingEdit: Boolean,
     val editingVideoList: List<GalleryMedia>?,
     val isExportingVideo: Boolean,
-    val exportVideoProgress: Int,
     val isScanning: Boolean,
     val isRefreshing: Boolean,
     val loadingFolderIds: Set<Long> = emptySet(),
     /** Folders with a download in progress (their tiles show a badge). */
     val downloadingAlbumIds: Set<Long> = emptySet(),
     /** Whole folders being deleted in the background: their tiles show the progress. */
-    val deletingFolders: Map<Long, FolderDeleteProgress> = emptyMap(),
 )
 
 private fun Interaction.resetSplitIfNeeded(next: List<Long>): Interaction =
@@ -1055,6 +1105,8 @@ class GalleryViewModel(
     private val _editingVideoList = MutableStateFlow<List<GalleryMedia>?>(null)
     private val _isExportingVideo = MutableStateFlow(false)
     private val _exportVideoProgress = MutableStateFlow(0)
+    /** The video export's percent: collected by the editor itself, not part of the screen state. */
+    val exportVideoProgress: StateFlow<Int> = _exportVideoProgress.asStateFlow()
     private val _isRefreshing = MutableStateFlow(false)
     private val _loadingFolderIds = MutableStateFlow<Set<Long>>(emptySet())
     /** Loads of each folder that show its spinner (see [loadFolderMediaFast]). */
@@ -1354,27 +1406,28 @@ class GalleryViewModel(
         combine(_editingMedia, _isSavingEdit, _editingVideoList) { editing, isSaving, videoList ->
             Triple(editing, isSaving, videoList)
         },
+        // The export's percent and the folder deletes' progress are not here: they changed every
+        // percent / batch and rebuilt the whole screen. Read by what shows them (see
+        // [exportVideoProgress], FolderDeleteQueue.jobs).
         combine(
-            combine(_isExportingVideo, _exportVideoProgress, repository.isScanning) { exp, prog, scan -> Triple(exp, prog, scan) },
-            combine(_isRefreshing, FolderDeleteQueue.jobs) { refreshing, deleting -> refreshing to deleting },
+            combine(_isExportingVideo, repository.isScanning) { exp, scan -> exp to scan },
+            _isRefreshing,
             combine(_loadingFolderIds, downloadingAlbumIds) { loading, downloading -> loading to downloading },
-        ) { (exp, prog, scan), refreshingAndDeleting, loadingAndDownloads ->
-            Triple(Triple(exp, prog, scan), refreshingAndDeleting, loadingAndDownloads)
+        ) { expScan, refreshing, loadingAndDownloads ->
+            Triple(expScan, refreshing, loadingAndDownloads)
         },
-    ) { (thumbEpoch, coverBumps), (editing, isSaving, videoList), (expProgScan, refreshingAndDeleting, loadingAndDownloads) ->
+    ) { (thumbEpoch, coverBumps), (editing, isSaving, videoList), (expScan, refreshing, loadingAndDownloads) ->
         SyncState(
             thumbEpoch = thumbEpoch,
             coverBumps = coverBumps,
             editingMedia = editing,
             isSavingEdit = isSaving,
             editingVideoList = videoList,
-            isExportingVideo = expProgScan.first,
-            exportVideoProgress = expProgScan.second,
-            isScanning = expProgScan.third,
-            isRefreshing = refreshingAndDeleting.first,
+            isExportingVideo = expScan.first,
+            isScanning = expScan.second,
+            isRefreshing = refreshing,
             loadingFolderIds = loadingAndDownloads.first,
             downloadingAlbumIds = loadingAndDownloads.second,
-            deletingFolders = refreshingAndDeleting.second,
         )
     }
 
@@ -1586,11 +1639,9 @@ class GalleryViewModel(
             isSavingEdit = sync.isSavingEdit,
             editingVideoList = sync.editingVideoList,
             isExportingVideo = sync.isExportingVideo,
-            exportVideoProgress = sync.exportVideoProgress,
             isRefreshing = sync.isRefreshing,
             loadingFolderIds = sync.loadingFolderIds,
             downloadingAlbumIds = sync.downloadingAlbumIds,
-            deletingFolders = sync.deletingFolders,
             trashName = getApplication<Application>().getString(R.string.trash),
             favoritesName = getApplication<Application>().getString(R.string.favorites),
         ).also {
@@ -6707,6 +6758,7 @@ class GalleryViewModel(
     private var quickEditJob: Job? = null
     private var quickEditFinishing = false
     private val quickPhotoEncoder = dev.ander.alexet.data.QuickPhotoEncoder()
+    private val quickGifEncoder = dev.ander.alexet.data.QuickGifEncoder()
 
     /** A folder to show (a finished quick edit's notification); the screen opens it as a tap would. */
     private val _showFolderRequest = MutableStateFlow<Long?>(null)
@@ -6743,8 +6795,8 @@ class GalleryViewModel(
             toast(R.string.quick_edit_not_supported)
             return
         }
-        // One video at a time: a second export would share the notification and the forge.
-        if (media.isVideo && _quickEditTarget.value != null) {
+        // One video or GIF at a time: a second export would share the notification and the forge.
+        if ((media.isVideo || dev.ander.alexet.data.QuickEdit.isGif(media)) && _quickEditTarget.value != null) {
             toast(R.string.quick_edit_busy)
             return
         }
@@ -6756,20 +6808,27 @@ class GalleryViewModel(
 
     fun closeQuickEdit() {
         _quickEdit.value = null
-        viewModelScope.launch { quickPhotoEncoder.clear() }
+        viewModelScope.launch {
+            quickPhotoEncoder.clear()
+            quickGifEncoder.clear()
+        }
     }
 
-    /** Exact size of the photo saved with [settings]; null when it can't be made. */
+    /** Exact size of the photo or GIF saved with [settings]; null when it can't be made. */
     suspend fun quickEditPhotoBytes(
         source: dev.ander.alexet.data.QuickEditSource,
         settings: dev.ander.alexet.data.QuickEditSettings,
     ): Long? {
         val app = getApplication<Application>()
         val file = withContext(Dispatchers.IO) { repository.fileForMedia(source.media) }
-        return quickPhotoEncoder.bytes(app, source, file, settings)
+        return if (dev.ander.alexet.data.QuickEdit.isGif(source.media)) {
+            quickGifEncoder.bytes(app, source, file, settings)
+        } else {
+            quickPhotoEncoder.bytes(app, source, file, settings)
+        }
     }
 
-    /** The photo quality (and size, if needed) that makes it at most [targetBytes]. */
+    /** The photo or GIF quality (and size, if needed) that makes it at most [targetBytes]. */
     suspend fun quickEditFitPhoto(
         source: dev.ander.alexet.data.QuickEditSource,
         settings: dev.ander.alexet.data.QuickEditSettings,
@@ -6777,14 +6836,21 @@ class GalleryViewModel(
     ): dev.ander.alexet.data.QuickEdit.Fit<Float>? {
         val app = getApplication<Application>()
         val file = withContext(Dispatchers.IO) { repository.fileForMedia(source.media) }
+        val isGif = dev.ander.alexet.data.QuickEdit.isGif(source.media)
         return dev.ander.alexet.data.QuickEdit.fitToSize(targetBytes, dev.ander.alexet.data.QuickEdit.PHOTO_SCALES) { scale, quality ->
-            quickPhotoEncoder.bytes(app, source, file, settings.copy(scale = scale, quality = quality)) ?: Long.MAX_VALUE
+            val trial = settings.copy(scale = scale, quality = quality)
+            val measured = if (isGif) {
+                quickGifEncoder.bytes(app, source, file, trial)
+            } else {
+                quickPhotoEncoder.bytes(app, source, file, trial)
+            }
+            measured ?: Long.MAX_VALUE
         }
     }
 
     /**
      * Saves in the background: the popup and the viewer close at once, back to the gallery. A
-     * video's tile shows the forge and the notification its progress; a photo ends with a toast.
+     * video's or GIF's tile shows the forge and the notification its progress; a photo ends with a toast.
      */
     fun saveQuickEdit(
         source: dev.ander.alexet.data.QuickEditSource,
@@ -6793,7 +6859,8 @@ class GalleryViewModel(
         launchDelete: ((android.content.IntentSender) -> Unit)?,
     ) {
         AppLog.event("Action") { "saveQuickEdit id=${source.media.id} overwrite=$overwrite $settings" }
-        if (source.media.isVideo && _quickEditTarget.value != null) {
+        val isGif = dev.ander.alexet.data.QuickEdit.isGif(source.media)
+        if ((source.media.isVideo || isGif) && _quickEditTarget.value != null) {
             toast(R.string.quick_edit_busy)
             return
         }
@@ -6801,6 +6868,10 @@ class GalleryViewModel(
         if (interaction.value.viewerMediaId != null) closeViewer()
         if (source.media.isVideo) {
             saveQuickEditVideo(source, settings, overwrite, launchDelete)
+            return
+        }
+        if (isGif) {
+            saveQuickEditGif(source, settings, overwrite, launchDelete)
             return
         }
         val started = saveEditedImage(
@@ -6821,21 +6892,107 @@ class GalleryViewModel(
         launchDelete: ((android.content.IntentSender) -> Unit)?,
     ) {
         val media = source.media
+        val project = dev.ander.alexet.data.QuickEdit.videoProject(source, settings)
+        launchQuickEditExport(
+            media = media,
+            ext = "mp4",
+            overwrite = overwrite,
+            launchDelete = launchDelete,
+            durationMsForReplace = project.clips.first().trimmedDurationMs,
+            saveViaStorage = { app, output, sourceFile ->
+                val copied = saveExportedMediaToStorage(
+                    context = app,
+                    tempFile = output,
+                    baseName = media.displayName.substringBeforeLast('.'),
+                    ext = "mp4",
+                    format = dev.ander.alexet.data.videoeditor.ExportFormat.MP4,
+                    preferredFolder = sourceFile?.parentFile,
+                )
+                if (copied) repository.requestRefresh()
+                copied
+            },
+            successToast = R.string.export_completed,
+            failureToast = { R.string.export_failed },
+        ) { app, _, output, onPercent ->
+            val exported = dev.ander.alexet.data.videoeditor.VideoExportEngine.exportVideo(
+                context = app,
+                project = project,
+                config = dev.ander.alexet.data.QuickEdit.videoConfig(source, settings),
+                outputFile = output,
+                onProgress = onPercent,
+            )
+            if (exported) dev.ander.alexet.data.ExportResult.SAVED else dev.ander.alexet.data.ExportResult.FAILED
+        }
+    }
+
+    private fun saveQuickEditGif(
+        source: dev.ander.alexet.data.QuickEditSource,
+        settings: dev.ander.alexet.data.QuickEditSettings,
+        overwrite: Boolean,
+        launchDelete: ((android.content.IntentSender) -> Unit)?,
+    ) {
+        val media = source.media
+        launchQuickEditExport(
+            media = media,
+            ext = "gif",
+            overwrite = overwrite,
+            launchDelete = launchDelete,
+            saveViaStorage = { app, output, sourceFile ->
+                val copied = saveEditedImageToStorage(
+                    context = app,
+                    tempFile = output,
+                    baseName = media.displayName.substringBeforeLast('.'),
+                    ext = "gif",
+                    preferredFolder = sourceFile?.parentFile,
+                )
+                if (copied) repository.requestRefresh()
+                copied
+            },
+            successToast = R.string.image_saved,
+            failureToast = { result ->
+                if (result == dev.ander.alexet.data.ExportResult.OUT_OF_MEMORY) R.string.edit_save_oom
+                else R.string.image_save_failed
+            },
+        ) { app, sourceFile, output, onPercent ->
+            ImageEditEngine.processAndSaveGif(
+                context = app,
+                sourceFile = sourceFile,
+                sourceUri = media.uri,
+                destinationFile = output,
+                editState = dev.ander.alexet.data.QuickEdit.photoEditState(source, settings),
+                quality = settings.quality,
+                scale = settings.scale,
+                onProgress = { progress -> onPercent((progress * 100f).roundToInt()) },
+            )
+        }
+    }
+
+    private fun launchQuickEditExport(
+        media: GalleryMedia,
+        ext: String,
+        overwrite: Boolean,
+        launchDelete: ((android.content.IntentSender) -> Unit)?,
+        durationMsForReplace: Long? = null,
+        saveViaStorage: suspend (app: Application, output: File, sourceFile: File?) -> Boolean,
+        successToast: Int,
+        failureToast: (dev.ander.alexet.data.ExportResult?) -> Int,
+        runExport: suspend (app: Application, sourceFile: File?, output: File, onPercent: (Int) -> Unit) -> dev.ander.alexet.data.ExportResult,
+    ) {
         _quickEditPercent.value = 0
         quickEditFinishing = false
         quickEditJob = viewModelScope.launch {
             val app = getApplication<Application>()
             val sourceFile = withContext(Dispatchers.IO) { repository.fileForMedia(media) }
-            // In place only into an .mp4: another container gets an .mp4 copy and the original
+            // In place only into the same container: another gets a new copy and the original
             // goes to the trash.
-            val inPlace = overwrite && media.displayName.endsWith(".mp4", ignoreCase = true)
+            val inPlace = overwrite && media.displayName.endsWith(".$ext", ignoreCase = true)
             // A copy is written where it will stay: its tile is there from the start (with the
             // forge) and nothing is copied at the end. Elsewhere (no write access): a temp file.
             val folder = sourceFile?.parentFile?.takeIf { !inPlace && it.isDirectory && it.canWrite() }
             val output = if (folder != null) {
-                uniqueEditFile(folder, media.displayName.substringBeforeLast('.'), "mp4")
+                uniqueEditFile(folder, media.displayName.substringBeforeLast('.'), ext)
             } else {
-                File(app.cacheDir, "alexet_quick_${System.currentTimeMillis()}.mp4")
+                File(app.cacheDir, "alexet_quick_${System.currentTimeMillis()}.$ext")
             }
             val direct = folder != null
             _quickEditTarget.value = dev.ander.alexet.data.QuickEditTarget(media, output.absolutePath.takeIf { direct })
@@ -6857,33 +7014,28 @@ class GalleryViewModel(
             var cancelled = false
             var listedEarly = false
             try {
-                val project = dev.ander.alexet.data.QuickEdit.videoProject(source, settings)
-                val exported = dev.ander.alexet.data.videoeditor.VideoExportEngine.exportVideo(
-                    context = app,
-                    project = project,
-                    config = dev.ander.alexet.data.QuickEdit.videoConfig(source, settings),
-                    outputFile = output,
-                    onProgress = { pct ->
-                        _quickEditPercent.value = pct.coerceIn(0, 100)
-                        dev.ander.alexet.integration.ExportService.update(app, pct)
-                        if (direct) {
-                            // Still Alexet's own write (the mark lasts seconds).
-                            repository.noteOwnWrite(output)
-                            if (!listedEarly && output.exists()) {
-                                // The new file's tile shows up now, where it will stay.
-                                listedEarly = true
-                                MediaScannerConnection.scanFile(app, arrayOf(output.absolutePath), null) { _, _ ->
-                                    repository.requestRefresh()
-                                }
+                val exportResult = runExport(app, sourceFile, output) { pct ->
+                    val clamped = pct.coerceIn(0, 100)
+                    _quickEditPercent.value = clamped
+                    dev.ander.alexet.integration.ExportService.update(app, clamped)
+                    if (direct) {
+                        // Still Alexet's own write (the mark lasts seconds).
+                        repository.noteOwnWrite(output)
+                        if (!listedEarly && output.exists()) {
+                            // The new file's tile shows up now, where it will stay.
+                            listedEarly = true
+                            MediaScannerConnection.scanFile(app, arrayOf(output.absolutePath), null) { _, _ ->
+                                repository.requestRefresh()
                             }
                         }
-                    },
-                )
-                if (exported && output.exists() && output.length() > 0L) {
+                    }
+                }
+                if (exportResult == dev.ander.alexet.data.ExportResult.SAVED && output.exists() && output.length() > 0L) {
                     quickEditFinishing = true
                     saved = withContext(kotlinx.coroutines.NonCancellable) {
                         when {
                             direct -> {
+                                runCatching { output.setLastModified(System.currentTimeMillis()) }
                                 repository.endOwnWrite(output)
                                 dev.ander.alexet.data.StartupRecovery.donePartial(app, output)
                                 // In the list before the notification says it is done.
@@ -6894,33 +7046,22 @@ class GalleryViewModel(
                                 bumpFolderCovers(listOf(media.bucketId))
                                 true
                             }
-                            inPlace -> replaceOriginalInPlace(app, media, sourceFile, output, project.clips.first().trimmedDurationMs)
-                            else -> {
-                                val copied = saveExportedMediaToStorage(
-                                    context = app,
-                                    tempFile = output,
-                                    baseName = media.displayName.substringBeforeLast('.'),
-                                    ext = "mp4",
-                                    format = dev.ander.alexet.data.videoeditor.ExportFormat.MP4,
-                                    preferredFolder = sourceFile?.parentFile,
-                                )
-                                if (copied) repository.requestRefresh()
-                                copied
-                            }
+                            inPlace -> replaceOriginalInPlace(app, media, sourceFile, output, durationMsForReplace)
+                            else -> saveViaStorage(app, output, sourceFile)
                         }
                     }
                     if (saved && overwrite && !inPlace) {
                         withContext(kotlinx.coroutines.NonCancellable) { deleteReplacedOriginal(media, sourceFile, launchDelete) }
                     }
                 }
-                toast(if (saved) R.string.export_completed else R.string.export_failed)
+                toast(if (saved) successToast else failureToast(exportResult))
             } catch (e: Exception) {
                 if (e is CancellationException) {
                     cancelled = true
                     throw e
                 }
-                AppLog.e("QuickEdit", "video not saved", e)
-                toast(R.string.export_failed)
+                AppLog.e("QuickEdit", "$ext not saved", e)
+                toast(failureToast(null))
             } finally {
                 withContext(kotlinx.coroutines.NonCancellable) {
                     if (direct && !saved) {
@@ -7020,6 +7161,21 @@ class GalleryViewModel(
             } finally {
                 runCatching { retriever.release() }
             }
+        }
+        if (dev.ander.alexet.data.QuickEdit.isGif(media)) {
+            val data = ImageEditEngine.readSourceBytes(app, file, media.uri) ?: return null
+            val info = dev.ander.alexet.data.GifFrameReader.info(data) ?: return null
+            if (info.width <= 0 || info.height <= 0 || info.frameCount <= 0) return null
+            return dev.ander.alexet.data.QuickEditSource(
+                media = media.copy(
+                    width = info.width,
+                    height = info.height,
+                    sizeBytes = media.sizeBytes.takeIf { it > 0L } ?: data.size.toLong(),
+                ),
+                width = info.width,
+                height = info.height,
+                durationMs = 0L,
+            )
         }
         val (w, h) = ImageEditEngine.readImageBounds(app, file, media.uri) ?: return null
         // EXIF orientations 5 to 8 turn the photo a quarter: its sides swap.
@@ -7584,6 +7740,8 @@ class GalleryViewModel(
         if (ready.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
             var successCount = 0
+            // Written in place by Alexet: scanned here (the folder watcher leaves Alexet's own files).
+            val stripped = ArrayList<String>()
             for (item in ready) {
                 if (item.isVideo) continue
                 val file = repository.fileForMedia(item)
@@ -7598,7 +7756,13 @@ class GalleryViewModel(
                 } finally {
                     file?.let { repository.endOwnWrite(it) }
                 }
-                if (ok) successCount++
+                if (ok) {
+                    successCount++
+                    file?.takeIf { it.exists() }?.let { stripped += it.absolutePath }
+                }
+            }
+            if (stripped.isNotEmpty()) {
+                MediaScannerConnection.scanFile(getApplication(), stripped.toTypedArray(), null, null)
             }
             withContext(Dispatchers.Main) {
                 if (successCount > 0) {
@@ -7650,3 +7814,14 @@ class GalleryViewModel(
         private const val SMART_RESEARCH_STEP = 200
     }
 }
+
+/** The selected files in numbers: [nonVideos] counts photos and other files, as "not a video". */
+data class SelectionSummary(
+    val videos: Int,
+    val nonVideos: Int,
+    val hasOtherFile: Boolean,
+    /** The one folder all selected files are in; null for none or several. */
+    val singleBucketId: Long?,
+    val allFavorites: Boolean,
+    val anyHidden: Boolean,
+)

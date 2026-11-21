@@ -189,7 +189,12 @@ object DuplicateFinder {
                     for (j in i + 1 until n) {
                         val sj = j * WORDS
                         var bits = 0
-                        for (k in 0 until WORDS) bits += java.lang.Long.bitCount(signatures[si + k] xor signatures[sj + k])
+                        // Stops counting once past the limit (most pairs are far apart): same pairs kept.
+                        var k = 0
+                        while (k < WORDS && bits <= maxBits) {
+                            bits += java.lang.Long.bitCount(signatures[si + k] xor signatures[sj + k])
+                            k++
+                        }
                         if (bits > maxBits) continue
                         if (cosine(e, slots[i], slots[j]) >= minCosine) found += e.ids[slots[i]] to e.ids[slots[j]]
                     }
@@ -219,14 +224,18 @@ object DuplicateFinder {
         val workers = Runtime.getRuntime().availableProcessors().coerceIn(1, 8)
         (0 until workers).map { w ->
             async {
+                // The photo's vector as floats once, not converted again for each of the 256 planes
+                // (the same numbers, so the same signature).
+                val v = FloatArray(e.dim)
                 var i = w
                 while (i < slots.size) {
                     ensureActive()
                     val base = slots[i] * e.dim
+                    for (d in 0 until e.dim) v[d] = e.vectors[base + d].toFloat()
                     for (b in 0 until BITS) {
                         val pb = b * e.dim
                         var dot = 0f
-                        for (d in 0 until e.dim) dot += planes[pb + d] * e.vectors[base + d]
+                        for (d in 0 until e.dim) dot += planes[pb + d] * v[d]
                         if (dot >= 0f) {
                             val word = i * WORDS + b / 64
                             out[word] = out[word] or (1L shl (b % 64))

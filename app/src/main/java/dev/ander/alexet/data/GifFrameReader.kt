@@ -7,33 +7,62 @@ package dev.ander.alexet.data
  */
 object GifFrameReader {
 
-    class Info(val width: Int, val height: Int, val frameCount: Int)
+    class Info(
+        val width: Int,
+        val height: Int,
+        val frameCount: Int,
+        val frameDelaysMs: IntArray = IntArray(0),
+        val hasDisposalClear: Boolean = false,
+    )
 
     /** Size and number of frames (their data is skipped, not decoded); null when not a readable GIF. */
     fun info(data: ByteArray): Info? {
         val c = Cursor(data)
         val header = readHeader(c) ?: return null
         var frames = 0
+        var delayCs = 0
+        var disposal = 0
+        var hasDisposalClear = false
+        val delays = ArrayList<Int>()
         while (true) {
             when (c.u8()) {
                 0x21 -> {
-                    c.u8() // label
+                    val label = c.u8()
+                    if (label == 0xF9) {
+                        val size = c.u8()
+                        val packed = c.u8()
+                        delayCs = c.u16()
+                        c.u8() // transparent index
+                        disposal = (packed shr 2) and 7
+                        if (disposal == 2) hasDisposalClear = true
+                        c.skip((size - 4).coerceAtLeast(0))
+                    }
                     skipSubBlocks(c)
                 }
                 0x2C -> {
-                    c.skip(8)
+                    c.skip(4) // ix, iy
+                    val iw = c.u16()
+                    val ih = c.u16()
                     val packed = c.u8()
                     if (packed < 0) break
                     if (packed and 0x80 != 0) c.skip(3 * (1 shl ((packed and 7) + 1)))
-                    c.u8() // LZW minimum code size
+                    val minCodeSize = c.u8() // LZW minimum code size
+                    if (iw <= 0 || ih <= 0 || iw.toLong() * ih > MAX_PIXELS || minCodeSize !in 1..11) {
+                        skipSubBlocks(c)
+                        continue
+                    }
                     skipSubBlocks(c)
+                    val delayMs = (delayCs * 10).let { if (it <= 10) DEFAULT_DELAY_MS else it }
+                    delays.add(delayMs)
                     frames++
+                    delayCs = 0
+                    disposal = 0
                 }
                 0x00 -> continue // padding some writers leave between blocks
                 else -> break // trailer, end of data or damage
             }
         }
-        return Info(header.width, header.height, frames)
+        return Info(header.width, header.height, frames, delays.toIntArray(), hasDisposalClear)
     }
 
     /**

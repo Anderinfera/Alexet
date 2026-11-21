@@ -267,7 +267,8 @@ fun Modifier.settingsSearchTarget(@StringRes key: Int): Modifier = composed {
 
     Modifier
         .onSizeChanged { size = it }
-        .onGloballyPositioned { windowY[0] = it.positionInWindow().y }
+        // Followed only during a jump to this option: on all ~60 options it ran on every scroll frame.
+        .then(if (jump != null) Modifier.onGloballyPositioned { windowY[0] = it.positionInWindow().y } else Modifier)
         .bringIntoViewRequester(requester)
         .drawWithContent {
             drawContent()

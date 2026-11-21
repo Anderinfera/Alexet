@@ -91,6 +91,8 @@ fun AlexetVideoPlayer(
     onUpdatePlayerConfig: ((dev.ander.alexet.integration.AnderLineConfig) -> dev.ander.alexet.integration.AnderLineConfig) -> Unit = {},
     /** Keeps the window's orientation from before the rotate button; null: given back when this player goes. */
     orientationKeeper: ScreenOrientationKeeper? = null,
+    /** The viewer's one player, taken by this page instead of building (and releasing) its own. */
+    sharedPlayer: SharedVideoPlayer? = null,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -151,24 +153,30 @@ fun AlexetVideoPlayer(
         isEncryptedVideo && unlockedPaths.any { dir -> path.startsWith(dir.trimEnd('/') + "/") }
     }
 
-    val exoPlayer = remember(media.id, media.uri) {
+    val playerHolder = remember(media.id, media.uri) {
         object : androidx.compose.runtime.RememberObserver {
-            // Application context: the player may live on in its own threads after the screen.
-            val player: ExoPlayer = ExoPlayer.Builder(context.applicationContext)
-                // Audio focus: other sound pauses while it plays, a call pauses it; unplugged
-                // headphones pause it (it may play on in the background).
-                .setAudioAttributes(
-                    androidx.media3.common.AudioAttributes.Builder()
-                        .setUsage(androidx.media3.common.C.USAGE_MEDIA)
-                        .setContentType(
-                            if (media.isAudio) androidx.media3.common.C.AUDIO_CONTENT_TYPE_MUSIC
-                            else androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE,
-                        )
-                        .build(),
-                    true,
+            /** This page's hold on the viewer's shared player. */
+            val token = Any()
+            // Audio focus: other sound pauses while it plays, a call pauses it; unplugged
+            // headphones pause it (it may play on in the background).
+            private val attributes = androidx.media3.common.AudioAttributes.Builder()
+                .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                .setContentType(
+                    if (media.isAudio) androidx.media3.common.C.AUDIO_CONTENT_TYPE_MUSIC
+                    else androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE,
                 )
-                .setHandleAudioBecomingNoisy(true)
-                .build().apply {
+                .build()
+            // Application context: the player may live on in its own threads after the screen.
+            private val build = { appContext: Context ->
+                ExoPlayer.Builder(appContext)
+                    .setAudioAttributes(attributes, true)
+                    .setHandleAudioBecomingNoisy(true)
+                    .build()
+            }
+            val player: ExoPlayer = (
+                sharedPlayer?.acquire(token, build)?.also { it.setAudioAttributes(attributes, true) }
+                    ?: build(context.applicationContext)
+                ).apply {
                 val filePath = media.absolutePath
                 val file = if (filePath != null) java.io.File(filePath) else null
                 val isEnc = file != null && file.name.endsWith(dev.ander.alexet.data.SecureFolderManager.ENC_EXTENSION)
@@ -193,21 +201,29 @@ fun AlexetVideoPlayer(
             private fun doRelease() {
                 if (!released) {
                     released = true
-                    dev.ander.alexet.integration.BackgroundPlayback.stop(context, player)
-                    player.clearMediaItems()
-                    player.release()
+                    if (sharedPlayer != null) {
+                        // Kept for the next page; cleared only if this page still holds it.
+                        sharedPlayer.handBack(token)
+                    } else {
+                        dev.ander.alexet.integration.BackgroundPlayback.stop(context, player)
+                        player.clearMediaItems()
+                        player.release()
+                    }
                 }
             }
         }
-    }.player
+    }
+    val exoPlayer = playerHolder.player
+    /** This page still holds the player (with a shared one, the next page may have taken it). */
+    val holdsPlayer = { sharedPlayer == null || sharedPlayer.isHeldBy(playerHolder.token) }
 
     // A speed or loop restored after a process restart is applied to the new player.
-    LaunchedEffect(exoPlayer) {
+    LaunchedEffect(playerHolder) {
         if (playerState.playbackSpeed != 1f) exoPlayer.playbackParameters = PlaybackParameters(playerState.playbackSpeed)
         if (isLooping) exoPlayer.repeatMode = Player.REPEAT_MODE_ONE
     }
 
-    LaunchedEffect(media.id, media.uri, exoPlayer, folderUnlocked) {
+    LaunchedEffect(media.id, media.uri, playerHolder, folderUnlocked) {
         if (!isEncryptedVideo && savedPositionMs > 0L) exoPlayer.seekTo(savedPositionMs)
         if (isEncryptedVideo) {
             val file = media.absolutePath?.let { java.io.File(it) } ?: return@LaunchedEffect
@@ -221,8 +237,10 @@ fun AlexetVideoPlayer(
             }
             if (key == null) {
                 // Locked: nothing of the video stays loaded (a stream would go on decrypting).
-                exoPlayer.stop()
-                exoPlayer.clearMediaItems()
+                if (holdsPlayer()) {
+                    exoPlayer.stop()
+                    exoPlayer.clearMediaItems()
+                }
                 return@LaunchedEffect
             }
             val origName = file.name.removeSuffix(dev.ander.alexet.data.SecureFolderManager.ENC_EXTENSION)
@@ -283,10 +301,13 @@ fun AlexetVideoPlayer(
                     kotlinx.coroutines.awaitCancellation()
                 } finally {
                     // Locked (the effect restarts) or disposed: the player lets go of the bytes
-                    // first, then the decrypted video is wiped from RAM.
+                    // first, then the decrypted video is wiped from RAM. A shared player already
+                    // taken by the next page was cleared then (no longer holding these bytes).
                     runCatching {
-                        exoPlayer.stop()
-                        exoPlayer.clearMediaItems()
+                        if (holdsPlayer()) {
+                            exoPlayer.stop()
+                            exoPlayer.clearMediaItems()
+                        }
                     }
                     java.util.Arrays.fill(bytes, 0.toByte())
                 }
@@ -301,7 +322,7 @@ fun AlexetVideoPlayer(
     }
 
     // Attach Lifecycle observer
-    DisposableEffect(lifecycleOwner, exoPlayer) {
+    DisposableEffect(lifecycleOwner, playerHolder) {
         // Once the app is left the player gives its (hardware) decoder back, and on return it
         // loads again where it was, paused. Two exceptions: the small window plays on, and with
         // background playback a playing video goes on as sound only, with the media notification.
@@ -359,7 +380,7 @@ fun AlexetVideoPlayer(
 
     // The small window's play / pause button.
     if (inPip) {
-        DisposableEffect(exoPlayer) {
+        DisposableEffect(playerHolder) {
             val receiver = object : android.content.BroadcastReceiver() {
                 override fun onReceive(c: Context, intent: android.content.Intent) {
                     if (exoPlayer.isPlaying) {
@@ -381,7 +402,7 @@ fun AlexetVideoPlayer(
     }
 
     // Attach ExoPlayer listener and handle release
-    DisposableEffect(exoPlayer) {
+    DisposableEffect(playerHolder) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 playerState.isPlaying = isPlaying
@@ -418,11 +439,11 @@ fun AlexetVideoPlayer(
     }
 
     // SponsorBlock segments of this video, read from its chapters.
-    var sponsorSegments by remember(exoPlayer) { mutableStateOf(emptyList<SponsorSegment>()) }
+    var sponsorSegments by remember(playerHolder) { mutableStateOf(emptyList<SponsorSegment>()) }
     val autoSkipCategories by androidx.compose.runtime.rememberUpdatedState(
         if (config.sponsorBlockEnabled) config.sponsorBlockAutoSkip else emptySet(),
     )
-    val sponsorBlockSkipper = remember(exoPlayer) {
+    val sponsorBlockSkipper = remember(playerHolder) {
         SponsorBlockSkipper(
             player = exoPlayer,
             autoSkip = { autoSkipCategories },
@@ -436,7 +457,7 @@ fun AlexetVideoPlayer(
             },
         )
     }
-    DisposableEffect(exoPlayer) {
+    DisposableEffect(playerHolder) {
         exoPlayer.addListener(sponsorBlockSkipper)
         onDispose { exoPlayer.removeListener(sponsorBlockSkipper) }
     }
@@ -448,7 +469,7 @@ fun AlexetVideoPlayer(
     }
 
     // Periodic progress ticker
-    LaunchedEffect(exoPlayer, playerState.isPlaying) {
+    LaunchedEffect(playerHolder, playerState.isPlaying) {
         while (isActive && playerState.isPlaying) {
             playerState.positionMs = exoPlayer.currentPosition
             val dur = exoPlayer.duration
@@ -468,8 +489,8 @@ fun AlexetVideoPlayer(
     }
 
     // Video size for the "original" (pixel for pixel) scale mode.
-    var videoPixels by remember(exoPlayer) { mutableStateOf<androidx.media3.common.VideoSize?>(null) }
-    DisposableEffect(exoPlayer) {
+    var videoPixels by remember(playerHolder) { mutableStateOf<androidx.media3.common.VideoSize?>(null) }
+    DisposableEffect(playerHolder) {
         val listener = object : androidx.media3.common.Player.Listener {
             override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
                 videoPixels = videoSize.takeIf { it.width > 0 && it.height > 0 }
@@ -480,8 +501,8 @@ fun AlexetVideoPlayer(
         onDispose { exoPlayer.removeListener(listener) }
     }
     // (audio tracks, subtitle tracks) of the current video, for the track shortcuts.
-    var trackCounts by remember(exoPlayer) { mutableStateOf(0 to 0) }
-    DisposableEffect(exoPlayer) {
+    var trackCounts by remember(playerHolder) { mutableStateOf(0 to 0) }
+    DisposableEffect(playerHolder) {
         val listener = object : androidx.media3.common.Player.Listener {
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                 // Counted like cycleTrack picks them (playable only), or the button could do nothing.
@@ -545,6 +566,19 @@ fun AlexetVideoPlayer(
         else -> Modifier.fillMaxSize()
     }
 
+    // The video's still frame (the one the page showed while swiping to it) stays until the player
+    // draws its first frame: the page no longer goes black in between.
+    var firstFrameShown by remember(playerHolder) { mutableStateOf(false) }
+    DisposableEffect(playerHolder) {
+        val listener = object : Player.Listener {
+            override fun onRenderedFirstFrame() {
+                firstFrameShown = true
+            }
+        }
+        exoPlayer.addListener(listener)
+        onDispose { exoPlayer.removeListener(listener) }
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -596,6 +630,17 @@ fun AlexetVideoPlayer(
             },
             modifier = surfaceModifier,
         )
+        if (!isAudio && !firstFrameShown) {
+            dev.ander.alexet.ui.components.MediaThumbnail(
+                media = media,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                thumbnail = false,
+                showPlayIcon = false,
+                showDuration = false,
+                shape = androidx.compose.ui.graphics.RectangleShape,
+            )
+        }
 
         if (!inPip) {
             // Gesture detector layer
@@ -606,7 +651,11 @@ fun AlexetVideoPlayer(
                 onToggleControls = if (editingButtons == null) onToggleControls else ({}),
                 config = config,
                 horizontalSeek = horizontalSeek && editingButtons == null,
+                // A gesture's last call can come after the page was left (its coroutine is
+                // cancelled then): the shared player belongs to the next video by that time, so
+                // nothing is done to it.
                 onSwipeSeekStart = {
+                    if (!holdsPlayer()) return@VideoPlayerGestureDetector 0L
                     // Paused while scrubbing (the frames follow the finger), resumed afterwards.
                     swipeSeekWasPlaying[0] = exoPlayer.playWhenReady
                     exoPlayer.pause()
@@ -614,10 +663,12 @@ fun AlexetVideoPlayer(
                     exoPlayer.currentPosition
                 },
                 onSwipeSeekPreview = { targetMs ->
+                    if (!holdsPlayer()) return@VideoPlayerGestureDetector
                     exoPlayer.seekTo(targetMs)
                     playerState.positionMs = targetMs
                 },
                 onSwipeSeekEnd = { targetMs ->
+                    if (!holdsPlayer()) return@VideoPlayerGestureDetector
                     exoPlayer.setScrubbingModeEnabled(false)
                     if (targetMs != null) {
                         exoPlayer.seekTo(targetMs)
@@ -627,6 +678,7 @@ fun AlexetVideoPlayer(
                     swipeSeekWasPlaying[0] = false
                 },
                 onSeekRelative = { deltaMs ->
+                    if (!holdsPlayer()) return@VideoPlayerGestureDetector
                     val dur = exoPlayer.duration
                     val maxPos = if (dur > 0L) dur else Long.MAX_VALUE
                     val newPos = (exoPlayer.currentPosition + deltaMs).coerceIn(0L, maxPos)
@@ -634,6 +686,7 @@ fun AlexetVideoPlayer(
                     playerState.positionMs = newPos
                 },
                 onSetPlaybackSpeedTemporary = { tempSpeed ->
+                    if (!holdsPlayer()) return@VideoPlayerGestureDetector
                     val targetSpeed = tempSpeed ?: playerState.playbackSpeed
                     exoPlayer.playbackParameters = PlaybackParameters(targetSpeed)
                 },

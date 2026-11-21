@@ -149,12 +149,16 @@ private const val EXTRA_ORIENTATION = "android.content.extra.ORIENTATION"
  * file came from MediaStore now or from the disk cache.
  */
 @androidx.annotation.RequiresApi(Build.VERSION_CODES.Q)
-private fun decodeStoreThumb(raw: StoreRaw, sizePx: Int): Bitmap? {
+private fun decodeStoreThumb(raw: StoreRaw, sizePx: Int, isVideo: Boolean): Bitmap? {
     val decoded = runCatching {
         android.graphics.ImageDecoder.decodeBitmap(
             android.graphics.ImageDecoder.createSource(java.nio.ByteBuffer.wrap(raw.bytes)),
         ) { decoder, info, _ ->
             decoder.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
+            // Photos: 2 bytes a pixel instead of 4 for these opaque JPEGs, as the thumbnails decoded
+            // from files already are (RGB_565): twice as many fit in the memory cache. Video frames
+            // (often dark gradients) stay in full colour, as their kept thumbnails do.
+            if (!isVideo) decoder.memorySizePolicy = android.graphics.ImageDecoder.MEMORY_POLICY_LOW_RAM
             val sample = maxOf(info.size.width / sizePx, info.size.height / sizePx)
             if (sample > 1) decoder.setTargetSampleSize(sample)
         }
@@ -179,6 +183,7 @@ private object ThumbDiskCache {
     private const val KIND_STORE = "store"
     /** A picture Alexet made, kept losslessly (the same pixels come back). */
     private const val KIND_MADE = "lossless"
+    private const val THUMB_WEBP_EFFORT = 25
     private val writer = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread({
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
@@ -193,7 +198,7 @@ private object ThumbDiskCache {
             if (kind.startsWith(KIND_STORE)) {
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return@use null
                 val orientation = kind.substringAfter(' ', "0").trim().toIntOrNull() ?: 0
-                runCatching { decodeStoreThumb(StoreRaw(File(it.data.toString()).readBytes(), orientation), sizePx) }.getOrNull()
+                runCatching { decodeStoreThumb(StoreRaw(File(it.data.toString()).readBytes(), orientation), sizePx, isVideo) }.getOrNull()
             } else if (kind.startsWith(KIND_MADE)) {
                 val opts = BitmapFactory.Options().apply {
                     inPreferredConfig = if (isVideo) Bitmap.Config.ARGB_8888 else Bitmap.Config.RGB_565
@@ -221,7 +226,10 @@ private object ThumbDiskCache {
                     } else {
                         Bitmap.CompressFormat.PNG
                     }
-                    bitmap.compress(format, 100, out)
+                    // Lossless either way (the same pixels come back): for WebP the number is only the
+                    // effort, and 100 (the slowest) took hundreds of ms per picture on older phones
+                    // for a slightly smaller file. PNG ignores it.
+                    bitmap.compress(format, THUMB_WEBP_EFFORT, out)
                 }
             }.getOrDefault(false)
             runCatching { if (ok) editor.commit() else editor.abort() }
@@ -413,7 +421,7 @@ private fun loadStoreThumbnail(
         val orientation = afd.extras?.getInt(EXTRA_ORIENTATION, 0) ?: 0
         val bytes = afd.createInputStream().use { it.readBytes() }
         val raw = StoreRaw(bytes, orientation)
-        return decodeStoreThumb(raw, sizePx)?.let { StoreLoaded(it, raw) }
+        return decodeStoreThumb(raw, sizePx, isVideo)?.let { StoreLoaded(it, raw) }
     }
     @Suppress("DEPRECATION")
     val kind = if (sizePx <= 96) {
@@ -431,6 +439,9 @@ private fun loadStoreThumbnail(
 
 private fun decodeSampledEncryptedFile(file: File, sizePx: Int): Bitmap? {
     val key = SecureFolderManager.getActiveKeyForFile(file) ?: return null
+    // The picture the camera stored inside the photo's EXIF, when big enough and of the same shape:
+    // only the start of the file is decrypted (one 1 MB chunk) instead of all of it.
+    embeddedEncryptedThumb(file, key, sizePx)?.let { return it }
     // Grid thumbnails read from the RAM cache but do not populate it, so scrolling does not evict the viewer's files
     val bytes = dev.ander.alexet.data.SecureRamCache.getOrDecrypt(file, key, cache = false) ?: return null
     return try {
@@ -447,6 +458,74 @@ private fun decodeSampledEncryptedFile(file: File, sizePx: Int): Bitmap? {
     } finally {
         java.util.Arrays.fill(bytes, 0.toByte())
     }
+}
+
+/**
+ * The EXIF thumbnail of a private (chunked) photo, read through the decrypted start of the file;
+ * null when the file has none, it is smaller than about [sizePx] (a softer tile than before) or
+ * its shape differs from the photo's (cameras pad 16:9 photos' thumbnails with black bars).
+ */
+private fun embeddedEncryptedThumb(file: File, key: javax.crypto.SecretKey, sizePx: Int): Bitmap? {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
+    // JPEG only: its EXIF is in the first few KB, and ExifInterface stops there. For other formats
+    // it reads through much of the file (and keeps what it read): those are decrypted as before.
+    val originalName = file.name.removeSuffix(SecureFolderManager.ENC_EXTENSION).lowercase()
+    if (!originalName.endsWith(".jpg") && !originalName.endsWith(".jpeg")) return null
+    val reader = runCatching { dev.ander.alexet.data.EncryptedFormat.openRandomAccess(file, key, cachedChunks = 1) }.getOrNull()
+        ?: return null
+    return try {
+        runCatching {
+            val exif = android.media.ExifInterface(DecryptedInputStream(reader, limit = EXIF_READ_LIMIT))
+            if (!exif.hasThumbnail()) return null
+            val width = exif.getAttributeInt(android.media.ExifInterface.TAG_PIXEL_X_DIMENSION, 0)
+                .takeIf { it > 0 } ?: exif.getAttributeInt(android.media.ExifInterface.TAG_IMAGE_WIDTH, 0)
+            val height = exif.getAttributeInt(android.media.ExifInterface.TAG_PIXEL_Y_DIMENSION, 0)
+                .takeIf { it > 0 } ?: exif.getAttributeInt(android.media.ExifInterface.TAG_IMAGE_LENGTH, 0)
+            if (width <= 0 || height <= 0) return null
+            val thumb = exif.thumbnailBitmap ?: return null
+            val bigEnough = maxOf(thumb.width, thumb.height) >= sizePx * 6 / 5
+            val sameShape = kotlin.math.abs(thumb.width.toFloat() / thumb.height - width.toFloat() / height) <= 0.02f * width / height
+            if (!bigEnough || !sameShape) {
+                thumb.recycle()
+                return null
+            }
+            // The thumbnail is stored like the photo: upright by the photo's own orientation.
+            orientByExif(thumb, exif.getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_NORMAL))
+        }.getOrNull()
+    } finally {
+        runCatching { reader.close() }
+    }
+}
+
+/** Most of a private photo read for its EXIF thumbnail (a JPEG's EXIF is within its first 64 KB). */
+private const val EXIF_READ_LIMIT = 256L * 1024L
+
+/** The first [limit] decrypted bytes of a private file, read chunk by chunk as needed. */
+private class DecryptedInputStream(
+    private val reader: dev.ander.alexet.data.EncryptedFormat.RandomAccessReader,
+    limit: Long,
+) : java.io.InputStream() {
+    private val end = minOf(reader.size, limit)
+    private var position = 0L
+    private val one = ByteArray(1)
+
+    override fun read(): Int = if (read(one, 0, 1) <= 0) -1 else one[0].toInt() and 0xFF
+
+    override fun read(b: ByteArray, off: Int, len: Int): Int {
+        if (len == 0) return 0
+        if (position >= end) return -1
+        val n = reader.read(position, b, off, minOf(len.toLong(), end - position).toInt())
+        if (n > 0) position += n
+        return n
+    }
+
+    override fun skip(n: Long): Long {
+        val step = n.coerceIn(0L, (end - position).coerceAtLeast(0L))
+        position += step
+        return step
+    }
+
+    override fun available(): Int = (end - position).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
 }
 
 private suspend fun decodeSampledFromFile(file: java.io.File, sizePx: Int): Bitmap? {

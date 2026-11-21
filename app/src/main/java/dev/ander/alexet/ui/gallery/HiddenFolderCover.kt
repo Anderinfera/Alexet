@@ -84,7 +84,9 @@ fun HiddenFolderCover(
             }
             HiddenCoverStyle.IMAGE -> {
                 val path = config.imagePath
-                if (path != null && java.io.File(path).exists()) {
+                // Looked at once per picture, not on every recomposition of every hidden tile.
+                val exists = remember(path, config.imageVersion) { path != null && java.io.File(path).exists() }
+                if (path != null && exists) {
                     val context = LocalContext.current
                     val request = remember(path, config.imageVersion) {
                         ImageRequest.Builder(context)
@@ -136,6 +138,19 @@ private fun PlainColor(color: Int) {
     Box(Modifier.fillMaxSize().background(Color(color)))
 }
 
+/**
+ * Long side to decode a cover at: its short side still reaches [sidePx] (wide panoramas too), at
+ * least 128 (older Androids give a square crop below 96), at most 1024.
+ */
+private fun coverDecodeSize(cover: GalleryMedia, sidePx: Int): Int {
+    val aspect = if (cover.width > 0 && cover.height > 0) {
+        maxOf(cover.width, cover.height).toFloat() / minOf(cover.width, cover.height)
+    } else {
+        2f
+    }
+    return maxOf(kotlin.math.ceil(sidePx * aspect * 1.2f).toInt(), sidePx * 2, 128).coerceAtMost(1024)
+}
+
 /** The cover decoded down to [sidePx] on its shorter side and stretched back over the tile. */
 @Composable
 private fun DownscaledCover(cover: GalleryMedia, sidePx: Int, smooth: Boolean, modifier: Modifier) {
@@ -143,6 +158,9 @@ private fun DownscaledCover(cover: GalleryMedia, sidePx: Int, smooth: Boolean, m
     val request = remember(cover.id, cover.dateModifiedMs, sidePx) {
         ImageRequest.Builder(context)
             .data(MediaThumb(uri = cover.uri, id = cover.id, isVideo = cover.isVideo, path = cover.absolutePath))
+            // Decoded small (it ends up [sidePx] wide anyway): the tile's own size was decoded and
+            // then thrown away. Over 96 so older Androids give the whole picture, not a square crop.
+            .size(coverDecodeSize(cover, sidePx))
             .transformations(DownscaleTransformation(sidePx))
             .memoryCacheKey("hidden-cover-${cover.id}-${cover.dateModifiedMs}-$sidePx")
             // Only in memory: nothing of a hidden folder is written to the cache on disk.

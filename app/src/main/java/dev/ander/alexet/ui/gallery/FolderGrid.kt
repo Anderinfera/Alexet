@@ -119,7 +119,7 @@ fun FolderGrid(
     visibleRows: Int,
     hoveredAlbumId: Long,
     stampedAlbumIds: Set<Long>,
-    selectedCount: Int,
+    hasFileSelection: Boolean,
     folderDragEnabled: Boolean,
     dimmed: Boolean,
     onAlbumClick: (Long) -> Unit,
@@ -142,7 +142,8 @@ fun FolderGrid(
     onTransientCountChange: (Int?) -> Unit = {},
     isLoading: Boolean = false,
     downloadingAlbumIds: Set<Long> = emptySet(),
-    deletingFolders: Map<Long, FolderDeleteProgress> = emptyMap(),
+    /** Read by each tile (a delete's progress changes every batch): the grid itself does not recompose for it. */
+    deletingFolders: () -> Map<Long, FolderDeleteProgress> = { emptyMap() },
     onCancelFolderDelete: (Long) -> Unit = {},
 ) {
     val safeAlbums = remember(albums) { albums.distinctBy { it.id } }
@@ -227,7 +228,7 @@ fun FolderGrid(
                         itemBounds.remove(album.id)
                     }
                 }
-                val deleting = deletingFolders[album.id]
+                val deleting = deletingFolders()[album.id]
                 FolderTile(
                     album = album,
                     deleting = deleting,
@@ -238,17 +239,17 @@ fun FolderGrid(
                     hidden = album.id in hiddenAlbumIds,
                     isAnonymous = album.id in anonymousAlbumIds,
                     downloading = album.id in downloadingAlbumIds,
-                    folderDragEnabled = folderDragEnabled && selectedCount == 0 && displayAlbumIdSet.isEmpty(),
+                    folderDragEnabled = folderDragEnabled && !hasFileSelection && displayAlbumIdSet.isEmpty(),
                     onClick = {
                         when {
                             displayAlbumIdSet.isNotEmpty() -> onToggleAlbum(album.id)
-                            selectedCount > 0 -> onStamp(album.id)
+                            hasFileSelection -> onStamp(album.id)
                             else -> onAlbumClick(album.id)
                         }
                     },
                     onLongClick = {
                         when {
-                            selectedCount > 0 -> onStamp(album.id)
+                            hasFileSelection -> onStamp(album.id)
                             else -> onToggleAlbum(album.id)
                         }
                     },

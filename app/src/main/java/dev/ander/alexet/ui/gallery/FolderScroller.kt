@@ -30,7 +30,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -172,13 +174,20 @@ fun FolderScroller(
 
         var lastHapticIndex by remember { mutableIntStateOf(-1) }
 
-        if (labelFor != null && labelAlpha > 0.01f) {
-            // File at the thumb: the drag target row (first visible file while fading out).
-            val labelIndex = if (isDragging) {
-                ((dragProgress * maxScrollRow()).roundToInt() * safeColumns).coerceIn(0, itemCount - 1)
-            } else {
-                gridState.firstVisibleItemIndex.coerceIn(0, itemCount - 1)
+        // Only whether the bubble shows, and the file it names, are read here: both change far less
+        // often than the fade and the drag (every frame), which recomposed the scroller each time.
+        val labelShown by remember { derivedStateOf { labelAlpha > 0.01f } }
+        // File at the thumb: the drag target row (first visible file while fading out).
+        val labelIndex by remember(itemCount, safeColumns, totalRows, gridState, fallbackRowPx) {
+            derivedStateOf {
+                if (isDragging) {
+                    ((dragProgress * maxScrollRow()).roundToInt() * safeColumns).coerceIn(0, itemCount - 1)
+                } else {
+                    gridState.firstVisibleItemIndex.coerceIn(0, itemCount - 1)
+                }
             }
+        }
+        if (labelFor != null && labelShown) {
             val text = labelFor(labelIndex)
             if (text != null) {
                 val gapPx = with(density) { 12.dp.roundToPx() }
@@ -204,7 +213,11 @@ fun FolderScroller(
                                 placeable.place(x, y)
                             }
                         }
-                        .alpha(labelAlpha)
+                        .graphicsLayer {
+                            alpha = labelAlpha
+                            // As Modifier.alpha did: the shadow is clipped while fading.
+                            clip = labelAlpha < 1f
+                        }
                         .shadow(elevation = 4.dp, shape = RoundedCornerShape(percent = 50))
                         .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(percent = 50))
                         .padding(horizontal = 20.dp, vertical = 10.dp),
@@ -225,7 +238,6 @@ fun FolderScroller(
             animationSpec = tween(durationMillis = 180),
             label = "scrollerThumbWidth",
         )
-        val thumbAlpha = max(activeFraction, animatedAlpha * 0.8f)
         Box(
             modifier = Modifier
                 .align(pillAlignment)
@@ -233,8 +245,16 @@ fun FolderScroller(
                 .padding(horizontal = 2.dp)
                 .width(thumbWidth)
                 .height(44.dp)
-                .alpha(thumbAlpha)
-                .shadow(elevation = 3.dp * activeFraction, shape = RoundedCornerShape(percent = 50))
+                // Read while drawing: the fades no longer recompose the scroller.
+                .graphicsLayer {
+                    alpha = max(activeFraction, animatedAlpha * 0.8f)
+                    clip = alpha < 1f
+                }
+                .graphicsLayer {
+                    shadowElevation = 3.dp.toPx() * activeFraction
+                    shape = RoundedCornerShape(percent = 50)
+                    clip = shadowElevation > 0f
+                }
                 .clip(RoundedCornerShape(percent = 50))
                 .background(MaterialTheme.colorScheme.primary),
         )

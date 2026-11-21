@@ -152,8 +152,9 @@ internal fun PhoneFlowPreview(
             label = "phoneFlowTime",
         )
     }
+    val drawTime = rememberPreviewDrawTime(time, 4200)
     Canvas(modifier.size(width, height).then(onScreen.modifier)) {
-        val t = time?.value ?: 0.6f
+        val t = drawTime?.value ?: 0.6f
         val screen = drawDevice(PreviewDevice.PHONE, colors)
         val u = 1.dp.toPx()
         val pad = 2f * u
